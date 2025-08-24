@@ -206,8 +206,8 @@ def main() -> int:
             ('nums', StandardScaler(with_mean=False), ['files_changed', 'additions', 'deletions']),
         ],
         transformer_weights={
-            'diff': 1.5,   
-            'exts': 3.0,   
+            'diff': 1.0,   
+            'exts': 1.0,   
             'nums': 1.0,   
         }
     )
