@@ -195,15 +195,22 @@ def main() -> int:
     y_test = df_test['label']
 
     # Build pipeline
-    preproc = ColumnTransformer([
-        ('diff', TfidfVectorizer(
-            max_features=args.tfidf_max_features,
-            ngram_range=(args.tfidf_ngram_min, args.tfidf_ngram_max),
-            min_df=args.tfidf_min_df,
-        ), 'diff_proc'),
-        ('exts', CountVectorizer(), 'exts_proc'),
-        ('nums', StandardScaler(with_mean=False), ['files_changed', 'additions', 'deletions']),
-    ])
+    preproc = ColumnTransformer(
+        transformers=[
+            ('diff', TfidfVectorizer(
+                max_features=args.tfidf_max_features,
+                ngram_range=(args.tfidf_ngram_min, args.tfidf_ngram_max),
+                min_df=args.tfidf_min_df,
+            ), 'diff_proc'),
+            ('exts', CountVectorizer(binary=True, min_df=1), 'exts_proc'),
+            ('nums', StandardScaler(with_mean=False), ['files_changed', 'additions', 'deletions']),
+        ],
+        transformer_weights={
+            'diff': 1.5,   
+            'exts': 3.0,   
+            'nums': 1.0,   
+        }
+    )
 
     clf = LogisticRegression(max_iter=3000, class_weight='balanced', n_jobs=None)
     pipe = Pipeline([
