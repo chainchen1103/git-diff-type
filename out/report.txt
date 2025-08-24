@@ -1,0 +1,15 @@
+              precision    recall  f1-score   support
+
+       build      0.500     1.000     0.667         1
+       chore      0.000     0.000     0.000         2
+          ci      0.500     1.000     0.667         1
+        docs      0.333     1.000     0.500         1
+        feat      0.000     0.000     0.000         1
+         fix      0.000     0.000     0.000         2
+    refactor      0.000     0.000     0.000         1
+       style      0.000     0.000     0.000         1
+        test      0.000     0.000     0.000         0
+
+    accuracy                          0.300        10
+   macro avg      0.148     0.333     0.204        10
+weighted avg      0.133     0.300     0.183        10
