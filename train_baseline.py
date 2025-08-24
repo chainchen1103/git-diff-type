@@ -248,6 +248,24 @@ def main() -> int:
         Path(args.model).parent.mkdir(parents=True, exist_ok=True)
         joblib.dump(pipe, args.model)
         print(f'[ok] Saved model pipeline to {args.model}')
+    try:
+        counts_total = df['label'].value_counts().sort_index()
+        counts_train = y_train.value_counts().sort_index()
+        counts_test  = y_test.value_counts().sort_index()
+
+        counts_df = pd.DataFrame({
+            'total': counts_total,
+            'train': counts_train,
+            'test': counts_test,
+        }).fillna(0).astype(int).sort_index()
+
+        out_dir = Path('out')
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out_path = out_dir / 'label_counts.csv'
+        counts_df.to_csv(out_path, encoding='utf-8', index_label='label')
+        print(f'[ok] Saved label counts to {out_path}')
+    except Exception as e:
+        print(f'[warn] Failed to save label counts: {e}')
 
     return 0
 
