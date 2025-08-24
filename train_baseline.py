@@ -45,7 +45,7 @@ import numpy as np
 import pandas as pd
 
 from sklearn.model_selection import train_test_split
-from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 from sklearn.preprocessing import StandardScaler
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
@@ -163,6 +163,14 @@ def main() -> int:
         diff_proc.append(t)
     df['diff_proc'] = diff_proc
 
+    if 'top_exts' in df.columns:
+        df['exts_proc'] = df['top_exts'].apply(
+            lambda x: ' '.join(x) if isinstance(x, list) else str(x).replace(',', ' ').strip()
+        )
+    else:
+        df['exts_proc'] = ''
+    df['exts_proc'] = df['exts_proc'].fillna('')
+
     # Decide split
     if args.time_split and 'labeled_at' in df.columns:
         # Sort ascending by labeled_at and split last portion as test
@@ -180,9 +188,10 @@ def main() -> int:
         df_train, df_test = train_test_split(df, test_size=args.test_size,
                                              stratify=df['label'], random_state=args.random_state)
 
-    X_train = df_train[['diff_proc', 'files_changed', 'additions', 'deletions']]
+    X_cols = ['diff_proc', 'exts_proc', 'files_changed', 'additions', 'deletions']
+    X_train = df_train[X_cols]
+    X_test  = df_test [X_cols]
     y_train = df_train['label']
-    X_test = df_test[['diff_proc', 'files_changed', 'additions', 'deletions']]
     y_test = df_test['label']
 
     # Build pipeline
@@ -192,6 +201,7 @@ def main() -> int:
             ngram_range=(args.tfidf_ngram_min, args.tfidf_ngram_max),
             min_df=args.tfidf_min_df,
         ), 'diff_proc'),
+        ('exts', CountVectorizer(), 'exts_proc'),
         ('nums', StandardScaler(with_mean=False), ['files_changed', 'additions', 'deletions']),
     ])
 
