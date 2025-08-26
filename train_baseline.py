@@ -195,7 +195,7 @@ def main() -> int:
     else:
         df_train, df_test = train_test_split(df, test_size=args.test_size,
                                              stratify=df['label'], random_state=args.random_state)
-
+    
     X_cols = ['diff_proc', 'exts_proc', 'files_changed', 'additions', 'deletions']
     X_train = df_train[X_cols]
     X_test  = df_test [X_cols]
