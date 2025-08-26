@@ -227,15 +227,14 @@ def main() -> int:
     ])
 
     pipe.fit(X_train, y_train)
-    # === Optional: export to ONNX ===
+    # export to ONNX ===
     if args.onnx:
         if to_onnx is None:
             print('[warn] skl2onnx not installed; skip ONNX export. Install with `pip install skl2onnx onnx onnxruntime`.')
         else:
             try:
-                # 以一小筆實際資料推斷輸入 schema（最穩定）
                 sample = X_train.head(1)
-                onx = to_onnx(pipe, sample, target_opset=15)  # opset 15 對字串/稀疏支援好
+                onx = to_onnx(pipe, sample, target_opset=15)  
                 Path(args.onnx).parent.mkdir(parents=True, exist_ok=True)
                 with open(args.onnx, 'wb') as f:
                     f.write(onx.SerializeToString())
