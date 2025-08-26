@@ -54,8 +54,14 @@ from sklearn.metrics import classification_report, confusion_matrix
 
 try:
     import joblib
+    
 except Exception:  # pragma: no cover
     joblib = None
+
+try:
+    from skl2onnx import to_onnx
+except Exception:
+    to_onnx = None
 
 # -------------------------------
 # Data loading
@@ -133,6 +139,8 @@ def main() -> int:
     ap.add_argument('--tfidf-ngram-min', type=int, default=1)
     ap.add_argument('--tfidf-ngram-max', type=int, default=2)
     ap.add_argument('--tfidf-min-df', type=float, default=2)
+
+    ap.add_argument('--onnx', default='', help='Optional path to save ONNX model (e.g., out/model.onnx)')
 
     args = ap.parse_args()
 
@@ -219,6 +227,21 @@ def main() -> int:
     ])
 
     pipe.fit(X_train, y_train)
+    # === Optional: export to ONNX ===
+    if args.onnx:
+        if to_onnx is None:
+            print('[warn] skl2onnx not installed; skip ONNX export. Install with `pip install skl2onnx onnx onnxruntime`.')
+        else:
+            try:
+                # 以一小筆實際資料推斷輸入 schema（最穩定）
+                sample = X_train.head(1)
+                onx = to_onnx(pipe, sample, target_opset=15)  # opset 15 對字串/稀疏支援好
+                Path(args.onnx).parent.mkdir(parents=True, exist_ok=True)
+                with open(args.onnx, 'wb') as f:
+                    f.write(onx.SerializeToString())
+                print(f'[ok] Saved ONNX model to {args.onnx}')
+            except Exception as e:
+                print(f'[warn] Failed to export ONNX: {e}')
 
     # Evaluation
     y_pred = pipe.predict(X_test)

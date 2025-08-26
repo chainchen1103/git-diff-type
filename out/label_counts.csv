@@ -1,0 +1,11 @@
+label,total,train,test
+build,43,34,9
+chore,40,32,8
+ci,44,35,9
+docs,44,35,9
+feat,81,65,16
+fix,95,76,19
+perf,13,11,2
+refactor,68,54,14
+style,21,17,4
+test,48,38,10
