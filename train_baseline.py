@@ -150,7 +150,7 @@ def main() -> int:
     # Build DataFrame and coerce fields
     # Expected keys: diff_text, files_changed, additions, deletions, label
     df = pd.DataFrame(rows)
-
+    
     # Coerce numerics and fill missing
     for col in ['files_changed', 'additions', 'deletions']:
         if col not in df.columns:
@@ -163,6 +163,8 @@ def main() -> int:
     # Prepare diff text
     if 'diff_text' not in df.columns:
         raise ValueError('Dataset must contain a "diff_text" field')
+    
+    df['add_div'] = df['additions'] / (df['deletions'] + 1)
 
     diff_proc = []
     for s in df['diff_text'].astype(str).tolist():
@@ -196,7 +198,8 @@ def main() -> int:
         df_train, df_test = train_test_split(df, test_size=args.test_size,
                                              stratify=df['label'], random_state=args.random_state)
     
-    X_cols = ['diff_proc', 'exts_proc', 'files_changed', 'additions', 'deletions']
+    X_cols = ['diff_proc', 'exts_proc', 'files_changed', 'add_div']
+    # X_cols = ['diff_proc', 'exts_proc', 'files_changed', 'additions', 'deletions']
     X_train = df_train[X_cols]
     X_test  = df_test [X_cols]
     y_train = df_train['label']
@@ -211,7 +214,9 @@ def main() -> int:
                 min_df=args.tfidf_min_df,
             ), 'diff_proc'),
             ('exts', CountVectorizer(binary=True, min_df=1), 'exts_proc'),
-            ('nums', StandardScaler(with_mean=False), ['files_changed', 'additions', 'deletions']),
+            # ('nums', StandardScaler(with_mean=False), ['files_changed', 'additions', 'deletions']),
+            ('nums', StandardScaler(with_mean=False), ['files_changed', 'add_div']),
+
         ],
         transformer_weights={
             'diff': 1.0,   
