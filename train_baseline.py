@@ -37,11 +37,9 @@ python train_baseline.py --data commits_label.json
 from __future__ import annotations
 import argparse
 import json
-import os
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import  List
 
-import numpy as np
 import pandas as pd
 
 from sklearn.model_selection import train_test_split
