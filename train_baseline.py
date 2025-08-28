@@ -148,7 +148,6 @@ def main() -> int:
     rows = load_json_any(data_path)
 
     # Build DataFrame and coerce fields
-    # Expected keys: diff_text, files_changed, additions, deletions, label
     df = pd.DataFrame(rows)
     
     # Coerce numerics and fill missing
@@ -232,7 +231,7 @@ def main() -> int:
     ])
 
     pipe.fit(X_train, y_train)
-    # export to ONNX ===
+    # export to ONNX
     if args.onnx:
         if to_onnx is None:
             print('[warn] skl2onnx not installed; skip ONNX export. Install with `pip install skl2onnx onnx onnxruntime`.')
