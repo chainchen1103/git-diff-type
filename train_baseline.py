@@ -49,7 +49,7 @@ from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import classification_report, confusion_matrix
-
+from skl2onnx.common.data_types import StringTensorType, FloatTensorType
 try:
     import joblib
     
@@ -229,14 +229,23 @@ def main() -> int:
     ])
 
     pipe.fit(X_train, y_train)
+
     # export to ONNX
+
     if args.onnx:
         if to_onnx is None:
             print('[warn] skl2onnx not installed; skip ONNX export. Install with `pip install skl2onnx onnx onnxruntime`.')
         else:
             try:
-                sample = X_train.head(1)
-                onx = to_onnx(pipe, sample, target_opset=15)  
+                initial_types = [
+                    ('diff_proc', StringTensorType([None, 1])),
+                    ('exts_proc', StringTensorType([None, 1])),
+                    ('files_changed', FloatTensorType([None, 1])),
+                    ('add_div', FloatTensorType([None, 1])),
+                ]
+                options = {id(pipe): {'zipmap': False}}
+
+                onx = to_onnx(pipe, initial_types=initial_types, options=options, target_opset=15)
                 Path(args.onnx).parent.mkdir(parents=True, exist_ok=True)
                 with open(args.onnx, 'wb') as f:
                     f.write(onx.SerializeToString())
@@ -289,6 +298,12 @@ def main() -> int:
         Path(args.model).parent.mkdir(parents=True, exist_ok=True)
         joblib.dump(pipe, args.model)
         print(f'[ok] Saved model pipeline to {args.model}')
+        labels_path = Path(args.model).with_suffix('').parent / 'labels.txt'
+        labels_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(labels_path, 'w', encoding='utf-8') as f:
+            for c in pipe.named_steps['clf'].classes_:
+                f.write(str(c) + '\n')
+        print(f'[ok] Saved class labels to {labels_path}')
     try:
         counts_total = df['label'].value_counts().sort_index()
         counts_train = y_train.value_counts().sort_index()
@@ -309,7 +324,6 @@ def main() -> int:
         print(f'[warn] Failed to save label counts: {e}')
 
     return 0
-
 
 if __name__ == '__main__':
     raise SystemExit(main())
