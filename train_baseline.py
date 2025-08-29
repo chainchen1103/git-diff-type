@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import  List
 
 import pandas as pd
+import re
 
 from sklearn.model_selection import train_test_split
 from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
@@ -94,6 +95,33 @@ def load_json_any(path: Path) -> List[dict]:
 # -------------------------------
 # Diff preprocessing
 # -------------------------------
+
+def whitespace_change_ratio(diff_text: str) -> float:
+    """Estimate the proportion of changes that only affect whitespace/indentation.
+        Method: Remove whitespace from all + and - lines, then perform multiple alignments. 
+        The intersection counts as the number of pairs with whitespace-only changes.
+        ratio = 2*matches / max(1, adds + dels)
+    """
+    adds_clean, dels_clean = [], []
+    for raw in (diff_text or '').splitlines():
+        if not raw:
+            continue
+        # 跳過 diff header
+        if raw.startswith('+++ ') or raw.startswith('--- ') or raw.startswith('diff ') or raw.startswith('@@ '):
+            continue
+        if raw.startswith('+'):
+            adds_clean.append(re.sub(r'\s+', '', raw[1:]))
+        elif raw.startswith('-'):
+            dels_clean.append(re.sub(r'\s+', '', raw[1:]))
+
+    if not adds_clean and not dels_clean:
+        return 0.0
+
+    from collections import Counter
+    ca, cd = Counter(adds_clean), Counter(dels_clean)
+    matches = sum(min(ca[t], cd[t]) for t in set(ca) & set(cd))
+    total = len(adds_clean) + len(dels_clean)
+    return float(2 * matches) / float(total or 1)
 
 def extract_added_lines(diff_text: str) -> str:
     """Keep only lines starting with '+' but skip diff headers like '+++ b/file'."""
@@ -162,6 +190,7 @@ def main() -> int:
         raise ValueError('Dataset must contain a "diff_text" field')
     
     df['add_div'] = df['additions'] / (df['deletions'] + 1)
+    df['ws_ratio'] = df['diff_text'].apply(whitespace_change_ratio)
 
     diff_proc = []
     for s in df['diff_text'].astype(str).tolist():
@@ -195,8 +224,7 @@ def main() -> int:
         df_train, df_test = train_test_split(df, test_size=args.test_size,
                                              stratify=df['label'], random_state=args.random_state)
     
-    X_cols = ['diff_proc', 'exts_proc', 'files_changed', 'add_div']
-    # X_cols = ['diff_proc', 'exts_proc', 'files_changed', 'additions', 'deletions']
+    X_cols = ['diff_proc', 'exts_proc', 'files_changed', 'add_div', 'ws_ratio']
     X_train = df_train[X_cols]
     X_test  = df_test [X_cols]
     y_train = df_train['label']
@@ -212,7 +240,7 @@ def main() -> int:
             ), 'diff_proc'),
             ('exts', CountVectorizer(binary=True, min_df=1), 'exts_proc'),
             # ('nums', StandardScaler(with_mean=False), ['files_changed', 'additions', 'deletions']),
-            ('nums', StandardScaler(with_mean=False), ['files_changed', 'add_div']),
+            ('nums', StandardScaler(with_mean=False), ['files_changed', 'add_div', 'ws_ratio']),
 
         ],
         transformer_weights={
@@ -242,6 +270,7 @@ def main() -> int:
                     ('exts_proc', StringTensorType([None, 1])),
                     ('files_changed', FloatTensorType([None, 1])),
                     ('add_div', FloatTensorType([None, 1])),
+                    ('ws_ratio', FloatTensorType([None, 1])),
                 ]
                 options = {id(pipe): {'zipmap': False}}
 
