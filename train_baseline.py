@@ -3,20 +3,12 @@
 train_baseline.py — Train a baseline commit classifier from a JSON/JSONL dataset
 built with commit_labeler.py.
 
-Features used (as you requested):
+Features used:
 - diff_text (text)
 - files_changed (numeric)
 - additions (numeric)
 - deletions (numeric)
 - label (target)
-
-Highlights
-- Supports `.jsonl` (one JSON per line) **or** `.json` (array or {"data": [...]}).
-- Optional preprocessing to keep only **added lines** from the diff (recommended).
-- Time-based split (if `labeled_at` exists) or stratified random split.
-- TF‑IDF (1–2 gram) + Logistic Regression (`class_weight=balanced`).
-- Saves the whole **scikit-learn Pipeline** to a `.joblib` file.
-- Prints classification report and confusion matrix; can also save them to disk.
 
 Usage examples
 --------------
@@ -106,7 +98,7 @@ def whitespace_change_ratio(diff_text: str) -> float:
     for raw in (diff_text or '').splitlines():
         if not raw:
             continue
-        # 跳過 diff header
+
         if raw.startswith('+++ ') or raw.startswith('--- ') or raw.startswith('diff ') or raw.startswith('@@ '):
             continue
         if raw.startswith('+'):
@@ -132,7 +124,7 @@ def extract_added_lines(diff_text: str) -> str:
         if raw.startswith('+++ '):
             continue
         if raw.startswith('+'):
-            out_lines.append(raw[1:])  # drop leading '+'
+            out_lines.append(raw[1:]) 
     return '\n'.join(out_lines)
 
 
