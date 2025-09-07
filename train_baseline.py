@@ -43,6 +43,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import classification_report, confusion_matrix
 from skl2onnx.common.data_types import StringTensorType, FloatTensorType
+
 try:
     import joblib
     
