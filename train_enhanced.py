@@ -9,10 +9,13 @@ Improvements over baseline:
 2. Model:
    - Replaced LogisticRegression with LinearSVC (better for high-dimensional sparse text data).
 3. Data Handling:
-   - Parses paths directly from diff_text (no need to change miner.py schema).
+   - Supports loading all .json/.jsonl files from a directory.
+   - robustly handles both JSON arrays and JSONL formats.
+4. Visualization:
+   - Generates a Confusion Matrix heatmap image.
 
 Usage:
-  python train_enhanced.py --data datasets/combined_train.jsonl --model out/model_v2.joblib
+  python train_enhanced.py --data datasets/ --model out/model_v2.joblib --cm_out out/confusion_matrix.png
 """
 import argparse
 import json
@@ -24,6 +27,13 @@ from typing import List, Set
 import joblib
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
+try:
+    import seaborn as sns
+    HAS_SEABORN = True
+except ImportError:
+    HAS_SEABORN = False
+
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.compose import ColumnTransformer
 from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
@@ -138,24 +148,48 @@ def load_data(data_path: str):
     data = []
     path = Path(data_path)
     
-    # 支援讀取單一 jsonl 或資料夾內所有 jsonl
-    files = [path] if path.is_file() else list(path.glob("*.jsonl"))
+    # 支援讀取單一檔案 或 資料夾內所有 .json / .jsonl
+    files = []
+    if path.is_file():
+        files = [path]
+    else:
+        # 遞迴或非遞迴抓取皆可，這裡抓取當層
+        files = sorted(list(path.glob("*.json")) + list(path.glob("*.jsonl")))
+    
+    print(f"   Found {len(files)} file(s).")
     
     for p in files:
         with open(p, 'r', encoding='utf-8') as f:
+            # 策略：先嘗試當作整個 JSON Array 讀取，失敗則當作 JSONL 讀取
+            try:
+                content = json.load(f)
+                if isinstance(content, list):
+                    data.extend(content)
+                    continue
+                elif isinstance(content, dict) and 'data' in content:
+                     # 相容某些 { "data": [...] } 格式
+                    data.extend(content['data'])
+                    continue
+            except json.JSONDecodeError:
+                # 可能是 JSONL 或空檔，重置 cursor 逐行讀取
+                pass
+
+            f.seek(0)
             for line in f:
                 if line.strip():
                     try:
                         data.append(json.loads(line))
                     except json.JSONDecodeError:
                         continue
+                        
     return pd.DataFrame(data)
 
 def main():
     parser = argparse.ArgumentParser(description="Train enhanced commit classifier")
-    parser.add_argument("--data", required=True, help="Path to JSONL dataset(s)")
+    parser.add_argument("--data", required=True, help="Path to JSONL dataset(s) or directory")
     parser.add_argument("--model", default="out/model_v2.joblib", help="Output model path")
     parser.add_argument("--onnx", default="out/model_v2.onnx", help="Output ONNX path")
+    parser.add_argument("--cm_out", default="out/confusion_matrix.png", help="Path to save confusion matrix image")
     parser.add_argument("--max_diff_len", type=int, default=20000, help="Truncate diff text")
     args = parser.parse_args()
 
@@ -226,13 +260,46 @@ def main():
     y_pred = model.predict(X_test)
     print("\n" + classification_report(y_test, y_pred))
 
-    # 顯示 Confusion Matrix (Text)
+    # 產生混淆矩陣
     labels = sorted(model.classes_)
     cm = confusion_matrix(y_test, y_pred, labels=labels)
-    print("\nConfusion Matrix:")
+    print("\nConfusion Matrix (Text):")
     print(pd.DataFrame(cm, index=labels, columns=labels))
 
-    # 5. 儲存
+    # 5. 繪製混淆矩陣圖表
+    if args.cm_out:
+        print(f"🎨 Generating confusion matrix plot -> {args.cm_out}")
+        try:
+            plt.figure(figsize=(10, 8))
+            if HAS_SEABORN:
+                sns.heatmap(cm, annot=True, fmt='d', xticklabels=labels, yticklabels=labels, cmap='Blues')
+            else:
+                plt.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
+                plt.title("Confusion Matrix")
+                plt.colorbar()
+                tick_marks = np.arange(len(labels))
+                plt.xticks(tick_marks, labels, rotation=45, ha='right')
+                plt.yticks(tick_marks, labels)
+                
+                # 手動標註數字
+                thresh = cm.max() / 2.
+                for i, j in np.ndindex(cm.shape):
+                    plt.text(j, i, format(cm[i, j], 'd'),
+                             horizontalalignment="center",
+                             color="white" if cm[i, j] > thresh else "black")
+
+            plt.xlabel('Predicted Label')
+            plt.ylabel('True Label')
+            plt.title('Confusion Matrix')
+            plt.tight_layout()
+            
+            Path(args.cm_out).parent.mkdir(parents=True, exist_ok=True)
+            plt.savefig(args.cm_out, dpi=150)
+            plt.close()
+        except Exception as e:
+            print(f"⚠️  Failed to save plot: {e}")
+
+    # 6. 儲存模型
     Path(args.model).parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(model, args.model)
     print(f"\n💾 Model saved to {args.model}")
@@ -241,13 +308,10 @@ def main():
     with open(Path(args.model).parent / 'labels.txt', 'w') as f:
         f.write('\n'.join(labels))
 
-    # 6. 匯出 ONNX (Optional)
+    # 7. 匯出 ONNX (Optional)
     if HAS_ONNX and args.onnx:
         print("📦 Exporting to ONNX...")
         try:
-            # 定義輸入型別
-            # 注意: 這裡必須與 ColumnTransformer 的輸入對齊
-            # 雖然我們傳入 DataFrame，但在 ONNX 中通常定義為幾個 Tensor
             initial_types = [
                 ('diff_text', StringTensorType([None, 1])),
                 ('files_changed', FloatTensorType([None, 1])),
@@ -256,20 +320,12 @@ def main():
                 ('add_del_ratio', FloatTensorType([None, 1])),
             ]
             
-            # ONNX export 對於自定義 Transformer (DiffSimilarityExtractor) 可能會遇到困難
-            # 因為它包含 Python code。
-            # 為了讓它能被 export，通常需要註冊 custom converter，這比較複雜。
-            # 如果只是要在 Python 環境用，joblib 就夠了。
-            # 如果一定要 ONNX，這裡可能需要簡化特徵或寫 converter。
-            # 為了保持腳本簡單，這裡先做一個 try-catch 提醒。
-            
             onx = to_onnx(model, X_train[:1], options={id(clf): {'zipmap': False}})
             with open(args.onnx, "wb") as f:
                 f.write(onx.SerializeToString())
             print(f"   ONNX saved to {args.onnx}")
         except Exception as e:
-            print(f"⚠️  ONNX export skipped/failed (likely due to custom transformers): {e}")
-            print("   (To fix this, you'd need to register custom ONNX converters or rely on Python runtime)")
+            print(f"⚠️  ONNX export skipped/failed: {e}")
 
 if __name__ == '__main__':
     main()
