@@ -43,7 +43,6 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import LinearSVC
 
-# 嘗試匯入 ONNX 相關套件 (非必要)
 try:
     from skl2onnx import to_onnx
     from skl2onnx.common.data_types import StringTensorType, FloatTensorType
@@ -59,7 +58,6 @@ except ImportError:
 class DiffSimilarityExtractor(BaseEstimator, TransformerMixin):
     """
     計算 Diff 中新增部分與刪除部分的文字 Jaccard Similarity。
-    Refactor 通常具有較高的相似度（搬移代碼、改名），而 Feat 通常很低。
     """
     def __init__(self):
         self.token_pattern = re.compile(r'(?u)\b\w+\b')
@@ -104,8 +102,7 @@ class DiffSimilarityExtractor(BaseEstimator, TransformerMixin):
 class PathTokenExtractor(BaseEstimator, TransformerMixin):
     """
     從 Diff Text 中提取檔案路徑，並進行分詞。
-    例如: "diff --git a/src/auth/login.spec.ts" -> "src auth login spec ts"
-    這能捕捉 'spec', 'test', 'github', 'workflows' 等關鍵字。
+    "diff --git a/src/auth/login.spec.ts" -> "src auth login spec ts"
     """
     def fit(self, X, y=None):
         return self
@@ -148,30 +145,25 @@ def load_data(data_path: str):
     data = []
     path = Path(data_path)
     
-    # 支援讀取單一檔案 或 資料夾內所有 .json / .jsonl
     files = []
     if path.is_file():
         files = [path]
     else:
-        # 遞迴或非遞迴抓取皆可，這裡抓取當層
         files = sorted(list(path.glob("*.json")) + list(path.glob("*.jsonl")))
     
     print(f"   Found {len(files)} file(s).")
     
     for p in files:
         with open(p, 'r', encoding='utf-8') as f:
-            # 策略：先嘗試當作整個 JSON Array 讀取，失敗則當作 JSONL 讀取
             try:
                 content = json.load(f)
                 if isinstance(content, list):
                     data.extend(content)
                     continue
                 elif isinstance(content, dict) and 'data' in content:
-                     # 相容某些 { "data": [...] } 格式
                     data.extend(content['data'])
                     continue
             except json.JSONDecodeError:
-                # 可能是 JSONL 或空檔，重置 cursor 逐行讀取
                 pass
 
             f.seek(0)
@@ -193,21 +185,17 @@ def main():
     parser.add_argument("--max_diff_len", type=int, default=20000, help="Truncate diff text")
     args = parser.parse_args()
 
-    # 1. 載入資料
     df = load_data(args.data)
     if df.empty:
         print("❌ No data found.")
         return
 
-    # 簡單清理
     df['diff_text'] = df['diff_text'].fillna('')
     df['diff_text'] = df['diff_text'].apply(lambda x: x[:args.max_diff_len])
     
-    # 計算基礎數值特徵
     for col in ['files_changed', 'additions', 'deletions']:
         df[col] = pd.to_numeric(df.get(col, 0), errors='coerce').fillna(0)
     
-    # 增加特徵: Add/Del Ratio (對 feat/fix 有用)
     df['add_del_ratio'] = df['additions'] / (df['deletions'] + 1)
 
     print(f"📊 Training on {len(df)} samples...")
@@ -220,30 +208,23 @@ def main():
         X, y, test_size=0.1, random_state=42, stratify=y
     )
 
-    # 2. 定義 Pipeline
-    
-    # 特徵工程組合
+
     preprocessor = ColumnTransformer(
         transformers=[
-            # A. Diff 內容本身的文字特徵 (TF-IDF)
             ('diff_tfidf', TfidfVectorizer(max_features=10000, stop_words='english'), 'diff_text'),
             
-            # B. 路徑關鍵字 (Path Tokens) - 從 diff_text 提取
             ('path_bow', Pipeline([
                 ('extractor', PathTokenExtractor()),
                 ('vect', CountVectorizer(max_features=2000, binary=True))
             ]), 'diff_text'),
             
-            # C. Diff 相似度 (Jaccard) - 解決 Refactor
             ('diff_sim', DiffSimilarityExtractor(), 'diff_text'),
             
-            # D. 數值特徵標準化
             ('numeric', StandardScaler(), ['files_changed', 'additions', 'deletions', 'add_del_ratio']),
         ],
         remainder='drop'
     )
 
-    # 模型: LinearSVC (比 LR 更適合稀疏高維特徵，且輕量)
     clf = LinearSVC(class_weight='balanced', random_state=42, max_iter=5000)
 
     model = Pipeline([
@@ -251,22 +232,18 @@ def main():
         ('clf', clf)
     ])
 
-    # 3. 訓練
     print("🚀 Training model...")
     model.fit(X_train, y_train)
 
-    # 4. 評估
     print("⚖️  Evaluating...")
     y_pred = model.predict(X_test)
     print("\n" + classification_report(y_test, y_pred))
 
-    # 產生混淆矩陣
     labels = sorted(model.classes_)
     cm = confusion_matrix(y_test, y_pred, labels=labels)
     print("\nConfusion Matrix (Text):")
     print(pd.DataFrame(cm, index=labels, columns=labels))
 
-    # 5. 繪製混淆矩陣圖表
     if args.cm_out:
         print(f"🎨 Generating confusion matrix plot -> {args.cm_out}")
         try:
@@ -281,7 +258,6 @@ def main():
                 plt.xticks(tick_marks, labels, rotation=45, ha='right')
                 plt.yticks(tick_marks, labels)
                 
-                # 手動標註數字
                 thresh = cm.max() / 2.
                 for i, j in np.ndindex(cm.shape):
                     plt.text(j, i, format(cm[i, j], 'd'),
@@ -299,16 +275,13 @@ def main():
         except Exception as e:
             print(f"⚠️  Failed to save plot: {e}")
 
-    # 6. 儲存模型
     Path(args.model).parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(model, args.model)
     print(f"\n💾 Model saved to {args.model}")
     
-    # 儲存 labels 對照表
     with open(Path(args.model).parent / 'labels.txt', 'w') as f:
         f.write('\n'.join(labels))
 
-    # 7. 匯出 ONNX (Optional)
     if HAS_ONNX and args.onnx:
         print("📦 Exporting to ONNX...")
         try:

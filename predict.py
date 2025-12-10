@@ -58,16 +58,12 @@ class PathTokenExtractor(BaseEstimator, TransformerMixin):
                 if len(p) > 2: tokens.add(p.lower())
         return " ".join(tokens)
 
-# -----------------------------------------------------------------------------
-# 核心功能
-# -----------------------------------------------------------------------------
 
 def get_git_diff(cached=True):
     """獲取 git diff 內容"""
     cmd = ["git", "diff", "--cached"] if cached else ["git", "diff"]
     try:
-        # 加上 --no-color 避免 ANSI code 干擾
-        # 加上 --unified=3 (預設) 確保格式標準
+
         cmd += ["--no-color"] 
         result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace')
         if result.returncode != 0:
@@ -113,7 +109,6 @@ def main():
         print("   Please run: python train_enhanced.py --data ...")
         sys.exit(1)
 
-    # 1. 載入模型
     try:
         model = joblib.load(model_path)
     except Exception as e:
@@ -121,7 +116,6 @@ def main():
         print("   (Ensure you have defined the same custom extractor classes in this script)")
         sys.exit(1)
 
-    # 2. 獲取 Git 資訊
     print("🔍 Analyzing git changes...")
     diff_text = get_git_diff(cached=not args.unstaged)
     
@@ -135,24 +129,19 @@ def main():
     files_changed, additions, deletions = get_git_stats(cached=not args.unstaged)
     add_del_ratio = additions / (deletions + 1)
 
-    # 3. 準備輸入資料 (必須是 DataFrame 且欄位名稱與訓練時一致)
     input_df = pd.DataFrame([{
-        'diff_text': diff_text[:20000], # 記得做同樣的截斷
+        'diff_text': diff_text[:20000], 
         'files_changed': files_changed,
         'additions': additions,
         'deletions': deletions,
         'add_del_ratio': add_del_ratio
     }])
 
-    # 4. 預測
     try:
         pred_label = model.predict(input_df)[0]
         
-        # 如果模型支援機率估算 (例如有設 probability=True 的 SVC 或 LR)，可以顯示信心度
-        # LinearSVC 預設沒有 predict_proba，這裡用 decision_function 簡單判斷信心 (可選)
         confidence_msg = ""
         if hasattr(model, "decision_function"):
-             # 簡單看一下 decision function 的最大值
              pass 
 
         print("\n" + "="*40)
@@ -161,7 +150,6 @@ def main():
         
         print(f"\nStats: +{additions} / -{deletions} lines in {files_changed} files")
         
-        # 簡單的 Commit 訊息生成模板
         print(f"\nReady to commit? Copy this:\n")
         print(f"git commit -m \"{pred_label}: <description>\"")
         
