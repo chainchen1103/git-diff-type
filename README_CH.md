@@ -75,6 +75,15 @@ vocabs、StandardScaler、LinearSVC 每個 CV fold 的 coef/intercept、sigmoid
 校正）全部序列化成 JSON。`verify_export.py` 用純 NumPy 重實作 forward
 pass，並和 `predict_proba` 比對誤差 <1e-6。
 
+## Roadmap
+
+- **Remote 選擇** — `gca config push-remote <name>` 與 `--remote <name>`
+  可指定 push 的目標 remote，解析順序和 `gca.push` 相同
+  （flag > git config > default）。
+- **自訂 add 範圍** — `gca ./src ./tests/foo.py` 會把 paths 傳給 `git
+  add`，接著進入一般的 classify → pick → subject → commit → push 流程。
+  不帶參數的 `gca` 仍保持目前的 add-all 行為。
+
 ## 模型表現
 
 ![confusion_matrix](out/confusion_matrix.png)

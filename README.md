@@ -79,6 +79,16 @@ fold, sigmoid calibrators) to JSON. `verify_export.py` re-implements the
 forward pass in pure NumPy and asserts agreement with `predict_proba`
 within 1e-6.
 
+## Roadmap
+
+- **Remote selection** — `gca config push-remote <name>` and `--remote
+  <name>` to pick which remote receives the push, resolving the same
+  way as `gca.push` (flag > git config > default).
+- **Scoped staging** — `gca ./src ./tests/foo.py` should forward the
+  paths to `git add` instead of running `git add -A`, then continue
+  straight into the usual classify → pick → subject → commit → push
+  flow. Bare `gca` keeps the current add-all behavior.
+
 ## Model performance
 
 ![confusion_matrix](out/confusion_matrix.png)
