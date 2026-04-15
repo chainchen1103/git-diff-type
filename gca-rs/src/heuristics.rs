@@ -5,7 +5,6 @@ use regex::Regex;
 
 pub struct Hit {
     pub label: &'static str,
-    pub reason: String,
 }
 
 static DOC: Lazy<Vec<Regex>> = Lazy::new(|| {
@@ -67,13 +66,13 @@ pub fn classify(files: &[String]) -> Option<Hit> {
         return None;
     }
     if all_match(files, &CI) {
-        return Some(Hit { label: "ci", reason: format!("all {} file(s) under CI config paths", files.len()) });
+        return Some(Hit { label: "ci" });
     }
     if all_match(files, &DOC) {
-        return Some(Hit { label: "docs", reason: format!("all {} file(s) are documentation", files.len()) });
+        return Some(Hit { label: "docs" });
     }
     if all_match(files, &TEST) {
-        return Some(Hit { label: "test", reason: format!("all {} file(s) are test files", files.len()) });
+        return Some(Hit { label: "test" });
     }
     None
 }

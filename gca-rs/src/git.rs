@@ -1,5 +1,5 @@
 use anyhow::{anyhow, Result};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 pub struct Stats {
     pub files_changed: u32,
@@ -40,6 +40,32 @@ pub fn staged_files(cached: bool) -> Result<Vec<String>> {
     };
     let out = run(&args)?;
     Ok(out.lines().filter(|l| !l.is_empty()).map(|s| s.to_string()).collect())
+}
+
+fn run_inherit(args: &[&str]) -> Result<()> {
+    let status = Command::new("git")
+        .args(args)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .map_err(|e| anyhow!("failed to run git: {e}"))?;
+    if !status.success() {
+        return Err(anyhow!("git {} exited with {}", args.join(" "), status));
+    }
+    Ok(())
+}
+
+pub fn add_all() -> Result<()> {
+    run_inherit(&["add", "-A"])
+}
+
+pub fn commit(message: &str) -> Result<()> {
+    run_inherit(&["commit", "-m", message])
+}
+
+pub fn push() -> Result<()> {
+    run_inherit(&["push"])
 }
 
 pub fn stats(cached: bool) -> Result<Stats> {

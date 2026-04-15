@@ -7,17 +7,23 @@ A CLI that classifies your staged git diff into a Conventional Commit type
 a ready-to-copy commit message.
 
 ```
-$ git add .
 $ gca
+no staged changes; running `git add -A`
 Stats: +42 / -7 lines in 3 files
 
-? Pick commit type
+? Commit type
 > feat      ( 71.3%)
   refactor  ( 14.9%)
   chore     (  6.2%)
 
-git commit -m "feat: <description>"
+? feat: add user login middleware
+[main a1b2c3d] feat: add user login middleware
+ 3 files changed, 42 insertions(+), 7 deletions(-)
 ```
+
+One command from dirty tree to pushed commit: auto-stages if nothing
+is staged, lets you pick the type, prompts for the subject line,
+commits, and pushes.
 
 ## Install
 
@@ -35,14 +41,16 @@ single executable has no runtime dependencies.
 ## Usage
 
 ```
-gca                     # interactive top-3 picker on staged changes
-gca --dry-run           # print the top suggestion only
-gca --unstaged          # look at unstaged changes
+gca                     # default: stage if empty, pick, commit, push
+gca --no-push           # commit only
+gca --confirm-push      # ask before pushing
+gca --dry-run           # print the resulting message without committing
 gca --model other.json  # override the embedded model
 ```
 
-A path-based heuristic runs first (docs / test / ci); mixed commits fall
-through to the ML model.
+A path-based heuristic (docs / test / ci) sets the default cursor
+position when all staged files match one rule; you can still pick
+anything.
 
 ## Retraining
 

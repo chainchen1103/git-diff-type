@@ -5,7 +5,7 @@ mod model;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use dialoguer::{theme::ColorfulTheme, Select};
+use dialoguer::{theme::ColorfulTheme, Confirm, Input, Select};
 use std::path::PathBuf;
 
 use model::Model;
@@ -17,44 +17,39 @@ struct Args {
     #[arg(long)]
     model: Option<PathBuf>,
 
-    /// Look at unstaged changes instead of staged.
-    #[arg(long)]
-    unstaged: bool,
-
-    /// Skip the interactive picker and print the top suggestion only.
-    #[arg(long)]
-    dry_run: bool,
-
     /// Number of top suggestions to show.
     #[arg(long, default_value_t = 3)]
     topk: usize,
+
+    /// Print the suggestion but do not commit or push.
+    #[arg(long)]
+    dry_run: bool,
+
+    /// Commit but do not push.
+    #[arg(long)]
+    no_push: bool,
+
+    /// Ask for confirmation before pushing.
+    #[arg(long)]
+    confirm_push: bool,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    let cached = !args.unstaged;
-    let diff_text = git::diff(cached).context("failed to read git diff")?;
+    let mut diff_text = git::diff(true).context("failed to read staged diff")?;
     if diff_text.is_empty() {
-        let target = if cached { "staged" } else { "unstaged" };
-        println!("no {target} changes found");
-        if cached {
-            println!("   (try 'git add <file>' first, or pass --unstaged)");
+        println!("no staged changes; running `git add -A`");
+        git::add_all()?;
+        diff_text = git::diff(true).context("failed to read staged diff")?;
+        if diff_text.is_empty() {
+            println!("nothing to commit — working tree clean");
+            return Ok(());
         }
-        return Ok(());
     }
 
-    let files = git::staged_files(cached)?;
-    let stats = git::stats(cached)?;
-
-    if let Some(hit) = heuristics::classify(&files) {
-        println!("\n{}", "=".repeat(40));
-        println!("Suggested type: \x1b[1;32m{}\x1b[0m  (heuristic)", hit.label);
-        println!("Reason: {}", hit.reason);
-        println!("{}", "=".repeat(40));
-        print_commit_line(hit.label);
-        return Ok(());
-    }
+    let files = git::staged_files(true)?;
+    let stats = git::stats(true)?;
 
     static EMBEDDED_MODEL: &[u8] = include_bytes!("../../out/model_v2.json");
     let model = match &args.model {
@@ -70,24 +65,19 @@ fn main() -> Result<()> {
         stats.deletions as f64,
         stats.additions as f64 / (stats.deletions as f64 + 1.0),
     ];
-
     let feats = model.build_features(&diff_truncated, numeric);
     let probs = model.predict_proba(&feats);
     let top = model.topk(&probs, args.topk.max(1));
 
+    // Path-based heuristic takes the default cursor position when it fires.
+    let default_idx = heuristics::classify(&files)
+        .and_then(|hit| top.iter().position(|(l, _)| *l == hit.label))
+        .unwrap_or(0);
+
     println!(
-        "\nStats: +{} / -{} lines in {} files",
+        "Stats: +{} / -{} lines in {} files",
         stats.additions, stats.deletions, stats.files_changed
     );
-
-    if args.dry_run {
-        let (label, score) = top[0];
-        println!("\n{}", "=".repeat(40));
-        println!("Suggested type: \x1b[1;32m{label}\x1b[0m  ({:.1}%)", score * 100.0);
-        println!("{}", "=".repeat(40));
-        print_commit_line(label);
-        return Ok(());
-    }
 
     let items: Vec<String> = top
         .iter()
@@ -95,16 +85,40 @@ fn main() -> Result<()> {
         .collect();
 
     let chosen = Select::with_theme(&ColorfulTheme::default())
-        .with_prompt("Pick commit type")
+        .with_prompt("Commit type")
         .items(&items)
-        .default(0)
+        .default(default_idx)
         .interact()?;
+    let label = top[chosen].0;
 
-    print_commit_line(top[chosen].0);
+    let description: String = Input::with_theme(&ColorfulTheme::default())
+        .with_prompt(format!("{label}:"))
+        .validate_with(|s: &String| -> std::result::Result<(), &str> {
+            if s.trim().is_empty() { Err("description cannot be empty") } else { Ok(()) }
+        })
+        .interact_text()?;
+
+    let message = format!("{}: {}", label, description.trim());
+
+    if args.dry_run {
+        println!("\n(dry-run) git commit -m \"{message}\"");
+        return Ok(());
+    }
+
+    git::commit(&message).context("git commit failed")?;
+
+    if args.no_push {
+        return Ok(());
+    }
+    if args.confirm_push {
+        let yes = Confirm::with_theme(&ColorfulTheme::default())
+            .with_prompt("Push to remote?")
+            .default(true)
+            .interact()?;
+        if !yes {
+            return Ok(());
+        }
+    }
+    git::push().context("git push failed")?;
     Ok(())
-}
-
-fn print_commit_line(label: &str) {
-    println!("\nReady to commit? Copy this:\n");
-    println!("git commit -m \"{label}: <description>\"");
 }

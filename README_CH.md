@@ -7,17 +7,22 @@
 並印出可以直接複製的 commit 指令。
 
 ```
-$ git add .
 $ gca
+no staged changes; running `git add -A`
 Stats: +42 / -7 lines in 3 files
 
-? Pick commit type
+? Commit type
 > feat      ( 71.3%)
   refactor  ( 14.9%)
   chore     (  6.2%)
 
-git commit -m "feat: <description>"
+? feat: add user login middleware
+[main a1b2c3d] feat: add user login middleware
+ 3 files changed, 42 insertions(+), 7 deletions(-)
 ```
+
+一個指令從 dirty tree 到推上遠端：沒 staged 就自動 `git add -A`，
+選 type、輸入 subject、commit、push 全在一次互動裡完成。
 
 ## 安裝
 
@@ -34,13 +39,15 @@ cargo build --release
 ## 使用
 
 ```
-gca                     # 互動選 top-3（預設看 staged）
-gca --dry-run           # 只印最高分的建議
-gca --unstaged          # 分析未 staged 的改動
+gca                     # 預設：沒 staged 會自動 add、選 type、commit、push
+gca --no-push           # 只 commit 不 push
+gca --confirm-push      # push 前再問一次
+gca --dry-run           # 印出最終 commit message 但不執行
 gca --model other.json  # 用外部 JSON 覆寫內建模型
 ```
 
-會先套路徑啟發式（docs / test / ci），混合型 commit 才交給 ML 模型。
+路徑啟發式（docs / test / ci）若命中，會把對應 type 設成預設游標位置，
+但你還是可以選別的。
 
 ## 重新訓練
 
