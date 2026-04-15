@@ -40,12 +40,22 @@ cargo build --release
 
 ```
 gca                     # 預設：沒 staged 會自動 add、選 type、commit、push
-gca --no-push           # 只 commit 不 push
-gca --confirm-push      # push 前再問一次
+gca --no-push           # 當次：只 commit 不 push
+gca --confirm-push      # 當次：push 前再問一次
 gca --dry-run           # 印出最終 commit message 但不執行
 gca --model other.json  # 用外部 JSON 覆寫內建模型
 ```
 
+push 行為可以持久化到 `git config` 的 `gca.push`：
+
+```
+gca config push ask     # 每次 push 前都問
+gca config push never   # 只 commit 不 push
+gca config push auto    # 自動 push（預設）
+gca config push         # 印出目前設定
+```
+
+CLI flag 優先於 config，所以單次要變更行為還是可以直接帶 flag。
 路徑啟發式（docs / test / ci）若命中，會把對應 type 設成預設游標位置，
 但你還是可以選別的。
 

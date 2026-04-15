@@ -42,12 +42,22 @@ single executable has no runtime dependencies.
 
 ```
 gca                     # default: stage if empty, pick, commit, push
-gca --no-push           # commit only
-gca --confirm-push      # ask before pushing
+gca --no-push           # one-off: commit only
+gca --confirm-push      # one-off: ask before pushing
 gca --dry-run           # print the resulting message without committing
 gca --model other.json  # override the embedded model
 ```
 
+Persistent push behavior lives in `git config` under `gca.push`:
+
+```
+gca config push ask     # prompt before push every time
+gca config push never   # commit only
+gca config push auto    # push without asking (default)
+gca config push         # show current value
+```
+
+CLI flags still override the stored setting for a single invocation.
 A path-based heuristic (docs / test / ci) sets the default cursor
 position when all staged files match one rule; you can still pick
 anything.

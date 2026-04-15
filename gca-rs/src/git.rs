@@ -68,6 +68,19 @@ pub fn push() -> Result<()> {
     run_inherit(&["push"])
 }
 
+pub fn get_config(key: &str) -> Option<String> {
+    let out = Command::new("git").args(["config", "--get", key]).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if s.is_empty() { None } else { Some(s) }
+}
+
+pub fn set_config_global(key: &str, value: &str) -> Result<()> {
+    run_inherit(&["config", "--global", key, value])
+}
+
 pub fn stats(cached: bool) -> Result<Stats> {
     let args: Vec<&str> = if cached {
         vec!["diff", "--cached", "--numstat"]

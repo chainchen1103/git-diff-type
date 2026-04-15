@@ -4,39 +4,106 @@ mod heuristics;
 mod model;
 
 use anyhow::{Context, Result};
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use dialoguer::{theme::ColorfulTheme, Confirm, Input, Select};
 use std::path::PathBuf;
 
 use model::Model;
 
+const PUSH_CONFIG_KEY: &str = "gca.push";
+
 #[derive(Parser, Debug)]
 #[command(name = "gca", about = "Git commit type analyzer")]
-struct Args {
+struct Cli {
     /// Override the embedded model with an external JSON file.
-    #[arg(long)]
+    #[arg(long, global = true)]
     model: Option<PathBuf>,
 
     /// Number of top suggestions to show.
-    #[arg(long, default_value_t = 3)]
+    #[arg(long, default_value_t = 3, global = true)]
     topk: usize,
 
     /// Print the suggestion but do not commit or push.
-    #[arg(long)]
+    #[arg(long, global = true)]
     dry_run: bool,
 
-    /// Commit but do not push.
-    #[arg(long)]
+    /// One-off: commit but do not push (overrides `gca.push`).
+    #[arg(long, global = true)]
     no_push: bool,
 
-    /// Ask for confirmation before pushing.
-    #[arg(long)]
+    /// One-off: ask before pushing (overrides `gca.push`).
+    #[arg(long, global = true)]
     confirm_push: bool,
+
+    #[command(subcommand)]
+    command: Option<Cmd>,
+}
+
+#[derive(Subcommand, Debug)]
+enum Cmd {
+    /// Persistent settings stored in git config.
+    Config {
+        #[command(subcommand)]
+        what: ConfigCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ConfigCmd {
+    /// Set or show the default push behavior: auto | ask | never.
+    Push { mode: Option<String> },
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum PushMode { Auto, Ask, Never }
+
+fn resolve_push_mode(no_push: bool, confirm_push: bool) -> PushMode {
+    if no_push { return PushMode::Never; }
+    if confirm_push { return PushMode::Ask; }
+    match git::get_config(PUSH_CONFIG_KEY).as_deref() {
+        Some("never") | Some("off") | Some("no") => PushMode::Never,
+        Some("ask") | Some("confirm") => PushMode::Ask,
+        Some("auto") | Some("yes") | None => PushMode::Auto,
+        Some(other) => {
+            eprintln!("warning: unknown {PUSH_CONFIG_KEY} value {other:?}; falling back to auto");
+            PushMode::Auto
+        }
+    }
 }
 
 fn main() -> Result<()> {
-    let args = Args::parse();
+    let cli = Cli::parse();
 
+    if let Some(cmd) = &cli.command {
+        return handle_subcommand(cmd);
+    }
+
+    run_commit_flow(&cli)
+}
+
+fn handle_subcommand(cmd: &Cmd) -> Result<()> {
+    match cmd {
+        Cmd::Config { what: ConfigCmd::Push { mode: None } } => {
+            let cur = git::get_config(PUSH_CONFIG_KEY).unwrap_or_else(|| "auto".to_string());
+            println!("{PUSH_CONFIG_KEY} = {cur}");
+            Ok(())
+        }
+        Cmd::Config { what: ConfigCmd::Push { mode: Some(m) } } => {
+            let normalized = m.to_lowercase();
+            match normalized.as_str() {
+                "auto" | "ask" | "never" => {
+                    git::set_config_global(PUSH_CONFIG_KEY, &normalized)
+                        .context("failed to update git config")?;
+                    println!("set {PUSH_CONFIG_KEY} = {normalized}");
+                    Ok(())
+                }
+                _ => anyhow::bail!("invalid mode {m:?}; expected auto | ask | never"),
+            }
+        }
+    }
+}
+
+fn run_commit_flow(cli: &Cli) -> Result<()> {
     let mut diff_text = git::diff(true).context("failed to read staged diff")?;
     if diff_text.is_empty() {
         println!("no staged changes; running `git add -A`");
@@ -52,7 +119,7 @@ fn main() -> Result<()> {
     let stats = git::stats(true)?;
 
     static EMBEDDED_MODEL: &[u8] = include_bytes!("../../out/model_v2.json");
-    let model = match &args.model {
+    let model = match &cli.model {
         Some(p) => Model::load(p)
             .with_context(|| format!("failed to load model from {}", p.display()))?,
         None => Model::from_bytes(EMBEDDED_MODEL).context("failed to parse embedded model")?,
@@ -67,9 +134,8 @@ fn main() -> Result<()> {
     ];
     let feats = model.build_features(&diff_truncated, numeric);
     let probs = model.predict_proba(&feats);
-    let top = model.topk(&probs, args.topk.max(1));
+    let top = model.topk(&probs, cli.topk.max(1));
 
-    // Path-based heuristic takes the default cursor position when it fires.
     let default_idx = heuristics::classify(&files)
         .and_then(|hit| top.iter().position(|(l, _)| *l == hit.label))
         .unwrap_or(0);
@@ -100,25 +166,22 @@ fn main() -> Result<()> {
 
     let message = format!("{}: {}", label, description.trim());
 
-    if args.dry_run {
+    if cli.dry_run {
         println!("\n(dry-run) git commit -m \"{message}\"");
         return Ok(());
     }
 
     git::commit(&message).context("git commit failed")?;
 
-    if args.no_push {
-        return Ok(());
-    }
-    if args.confirm_push {
-        let yes = Confirm::with_theme(&ColorfulTheme::default())
-            .with_prompt("Push to remote?")
-            .default(true)
-            .interact()?;
-        if !yes {
-            return Ok(());
+    match resolve_push_mode(cli.no_push, cli.confirm_push) {
+        PushMode::Never => Ok(()),
+        PushMode::Ask => {
+            let yes = Confirm::with_theme(&ColorfulTheme::default())
+                .with_prompt("Push to remote?")
+                .default(true)
+                .interact()?;
+            if yes { git::push().context("git push failed") } else { Ok(()) }
         }
+        PushMode::Auto => git::push().context("git push failed"),
     }
-    git::push().context("git push failed")?;
-    Ok(())
 }
