@@ -1,10 +1,12 @@
 commits_label.*
-\.venv
+.venv/
 .env
-\temp_repos
-\datasets
-\build
+temp_repos/
+datasets/
+build/
+dist/
 __pycache__/
 *.pyc
+*.spec
 gca-rs/target/
 gca-rs/tests/fixtures.json
