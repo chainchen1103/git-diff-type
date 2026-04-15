@@ -199,7 +199,7 @@ def main():
 
             ('diff_sim', DiffSimilarityExtractor(), 'diff_text'),
             
-            # 5. 數值特徵 (原本的)
+            # 5. 數值特徵
             ('numeric', StandardScaler(), ['files_changed', 'additions', 'deletions', 'add_del_ratio']),
         ],
         remainder='drop'
