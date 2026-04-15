@@ -6,3 +6,5 @@ commits_label.*
 \build
 __pycache__/
 *.pyc
+gca-rs/target/
+gca-rs/tests/fixtures.json
