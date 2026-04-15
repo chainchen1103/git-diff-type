@@ -1,21 +1,13 @@
 #!/usr/bin/env python3
-"""
-train_enhanced.py — Improved commit classifier training script.
+"""Train the commit-type classifier.
 
-Improvements over baseline:
-1. Feature Engineering:
-   - Diff Similarity: Jaccard index between added and deleted tokens (targets 'refactor').
-   - Path Tokens: Tokenizes file paths from diff headers (targets 'test', 'ci', 'docs').
-2. Model:
-   - Replaced LogisticRegression with LinearSVC (better for high-dimensional sparse text data).
-3. Data Handling:
-   - Supports loading all .json/.jsonl files from a directory.
-   - robustly handles both JSON arrays and JSONL formats.
-4. Visualization:
-   - Generates a Confusion Matrix heatmap image.
+Features: TF-IDF over diff text, path tokens, file extensions, Jaccard
+similarity between added/deleted tokens, plus numeric stats. Classifier is
+calibrated LinearSVC so the CLI can surface top-k probabilities.
 
 Usage:
-  python train_enhanced.py --data datasets/ --model out/model_v2.joblib --cm_out out/confusion_matrix.png
+    python train_enhanced.py --data datasets/ --model out/model_v2.joblib \\
+        --cm_out out/confusion_matrix.png
 """
 import argparse
 import json
@@ -42,6 +34,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import LinearSVC
+from sklearn.calibration import CalibratedClassifierCV
 
 try:
     from skl2onnx import to_onnx
@@ -51,14 +44,28 @@ except ImportError:
     HAS_ONNX = False
 
 
-# -----------------------------------------------------------------------------
-# Custom Feature Extractors
-# -----------------------------------------------------------------------------
+class FileExtensionExtractor(BaseEstimator, TransformerMixin):
+    """Extract file extensions from diff headers, e.g. 'py md json'."""
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        return [self._extract_extensions(str(d)) for d in X]
+
+    def _extract_extensions(self, diff_text: str) -> str:
+        extensions = set()
+        matches = re.findall(r'^\+\+\+ b/.+(\.[a-zA-Z0-9]+)$', diff_text, re.MULTILINE)
+        if not matches:
+            matches = re.findall(r'^diff --git a/.+ b/.+(\.[a-zA-Z0-9]+)$', diff_text, re.MULTILINE)
+        for ext in matches:
+            extensions.add(ext.lstrip('.').lower())
+        return " ".join(extensions)
+
 
 class DiffSimilarityExtractor(BaseEstimator, TransformerMixin):
-    """
-    計算 Diff 中新增部分與刪除部分的文字 Jaccard Similarity。
-    """
+    """Jaccard similarity between added and deleted token sets in a diff."""
+
     def __init__(self):
         self.token_pattern = re.compile(r'(?u)\b\w+\b')
 
@@ -66,82 +73,50 @@ class DiffSimilarityExtractor(BaseEstimator, TransformerMixin):
         return self
 
     def transform(self, X):
-        # X is a list/series of diff_text strings
-        scores = []
-        for diff in X:
-            scores.append(self._compute_jaccard(str(diff)))
+        scores = [self._compute_jaccard(str(d)) for d in X]
         return np.array(scores).reshape(-1, 1)
 
     def _compute_jaccard(self, diff_text: str) -> float:
         if not diff_text:
             return 0.0
-        
-        adds_tokens = set()
-        dels_tokens = set()
-        
+        adds_tokens, dels_tokens = set(), set()
         for line in diff_text.splitlines():
-            # 跳過 header
             if line.startswith('+++') or line.startswith('---'):
                 continue
-            
-            # 簡單分詞
             if line.startswith('+'):
                 adds_tokens.update(self.token_pattern.findall(line[1:].lower()))
             elif line.startswith('-'):
                 dels_tokens.update(self.token_pattern.findall(line[1:].lower()))
-        
         if not adds_tokens and not dels_tokens:
             return 0.0
-            
         intersection = len(adds_tokens & dels_tokens)
         union = len(adds_tokens | dels_tokens)
-        
         return intersection / union if union > 0 else 0.0
 
 
 class PathTokenExtractor(BaseEstimator, TransformerMixin):
-    """
-    從 Diff Text 中提取檔案路徑，並進行分詞。
-    "diff --git a/src/auth/login.spec.ts" -> "src auth login spec ts"
-    """
+    """Tokenize file paths from diff headers: src/auth/login.ts -> 'src auth login'."""
+
     def fit(self, X, y=None):
         return self
 
     def transform(self, X):
-        paths_list = []
-        for diff in X:
-            paths_list.append(self._extract_path_tokens(str(diff)))
-        return paths_list
+        return [self._extract_path_tokens(str(d)) for d in X]
 
     def _extract_path_tokens(self, diff_text: str) -> str:
-        # 抓取 diff --git a/path/to/file b/...
-        # 或者 +++ b/path/to/file
         tokens = set()
-        
-        # 簡單策略：抓取 +++ b/ 之後的路徑
-        # 或是 diff --git a/ 之後的路徑
-        # 這裡用一個簡單的 regex 來抓取可能的路徑字串
         path_matches = re.findall(r'^\+\+\+ b/(.+)$', diff_text, re.MULTILINE)
         if not path_matches:
-            # 嘗試抓 diff --git
             path_matches = re.findall(r'^diff --git a/.+ b/(.+)$', diff_text, re.MULTILINE)
-            
         for path in path_matches:
-            # 將路徑拆解為 token: src/utils/foo.py -> src, utils, foo, py
-            parts = re.split(r'[/\-_.]', path)
-            for p in parts:
-                if len(p) > 2: # 過濾太短的
+            for p in re.split(r'[/\-_.]', path):
+                if len(p) > 2:
                     tokens.add(p.lower())
-                    
         return " ".join(tokens)
 
 
-# -----------------------------------------------------------------------------
-# Main Pipeline
-# -----------------------------------------------------------------------------
-
 def load_data(data_path: str):
-    print(f"📂 Loading data from {data_path}...")
+    print(f"loading data from {data_path}...")
     data = []
     path = Path(data_path)
     
@@ -187,19 +162,19 @@ def main():
 
     df = load_data(args.data)
     if df.empty:
-        print("❌ No data found.")
+        print("no data found")
         return
 
     df['diff_text'] = df['diff_text'].fillna('')
     df['diff_text'] = df['diff_text'].apply(lambda x: x[:args.max_diff_len])
-    
+
     for col in ['files_changed', 'additions', 'deletions']:
         df[col] = pd.to_numeric(df.get(col, 0), errors='coerce').fillna(0)
-    
+
     df['add_del_ratio'] = df['additions'] / (df['deletions'] + 1)
 
-    print(f"📊 Training on {len(df)} samples...")
-    print(f"   Labels: {df['label'].unique()}")
+    print(f"training on {len(df)} samples")
+    print(f"   labels: {df['label'].unique()}")
 
     X = df[['diff_text', 'files_changed', 'additions', 'deletions', 'add_del_ratio']]
     y = df['label']
@@ -208,44 +183,52 @@ def main():
         X, y, test_size=0.1, random_state=42, stratify=y
     )
 
-
     preprocessor = ColumnTransformer(
         transformers=[
             ('diff_tfidf', TfidfVectorizer(max_features=10000, stop_words='english'), 'diff_text'),
-            
+
             ('path_bow', Pipeline([
                 ('extractor', PathTokenExtractor()),
                 ('vect', CountVectorizer(max_features=2000, binary=True))
             ]), 'diff_text'),
-            
+
+            ('ext_bow', Pipeline([
+                ('extractor', FileExtensionExtractor()),
+                ('vect', CountVectorizer(max_features=100, binary=True))
+            ]), 'diff_text'),
+
             ('diff_sim', DiffSimilarityExtractor(), 'diff_text'),
             
+            # 5. 數值特徵 (原本的)
             ('numeric', StandardScaler(), ['files_changed', 'additions', 'deletions', 'add_del_ratio']),
         ],
         remainder='drop'
     )
 
-    clf = LinearSVC(class_weight='balanced', random_state=42, max_iter=5000)
+    # CalibratedClassifierCV wrap gives LinearSVC a true predict_proba so the
+    # CLI can show top-k probabilities directly.
+    base_svc = LinearSVC(class_weight='balanced', random_state=42, max_iter=5000)
+    clf = CalibratedClassifierCV(base_svc, method='sigmoid', cv=3)
 
     model = Pipeline([
         ('preprocessor', preprocessor),
         ('clf', clf)
     ])
 
-    print("🚀 Training model...")
+    print("training model...")
     model.fit(X_train, y_train)
 
-    print("⚖️  Evaluating...")
+    print("evaluating...")
     y_pred = model.predict(X_test)
     print("\n" + classification_report(y_test, y_pred))
 
     labels = sorted(model.classes_)
     cm = confusion_matrix(y_test, y_pred, labels=labels)
-    print("\nConfusion Matrix (Text):")
+    print("\nConfusion Matrix:")
     print(pd.DataFrame(cm, index=labels, columns=labels))
 
     if args.cm_out:
-        print(f"🎨 Generating confusion matrix plot -> {args.cm_out}")
+        print(f"writing confusion matrix plot -> {args.cm_out}")
         try:
             plt.figure(figsize=(10, 8))
             if HAS_SEABORN:
@@ -273,17 +256,17 @@ def main():
             plt.savefig(args.cm_out, dpi=150)
             plt.close()
         except Exception as e:
-            print(f"⚠️  Failed to save plot: {e}")
+            print(f"failed to save plot: {e}")
 
     Path(args.model).parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(model, args.model)
-    print(f"\n💾 Model saved to {args.model}")
-    
+    print(f"\nmodel saved to {args.model}")
+
     with open(Path(args.model).parent / 'labels.txt', 'w') as f:
         f.write('\n'.join(labels))
 
     if HAS_ONNX and args.onnx:
-        print("📦 Exporting to ONNX...")
+        print("exporting to ONNX...")
         try:
             initial_types = [
                 ('diff_text', StringTensorType([None, 1])),
@@ -292,13 +275,12 @@ def main():
                 ('deletions', FloatTensorType([None, 1])),
                 ('add_del_ratio', FloatTensorType([None, 1])),
             ]
-            
             onx = to_onnx(model, X_train[:1], options={id(clf): {'zipmap': False}})
             with open(args.onnx, "wb") as f:
                 f.write(onx.SerializeToString())
             print(f"   ONNX saved to {args.onnx}")
         except Exception as e:
-            print(f"⚠️  ONNX export skipped/failed: {e}")
+            print(f"ONNX export failed: {e}")
 
 if __name__ == '__main__':
     main()
