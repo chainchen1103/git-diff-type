@@ -4,3 +4,5 @@ commits_label.*
 \temp_repos
 \datasets
 \build
+__pycache__/
+*.pyc

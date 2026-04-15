@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""
-predict.py — Use the trained model to classify current git changes.
+"""Classify the current git diff using the trained model.
 
 Usage:
-  1. git add <files>
-  2. python predict.py
+    git add <files>
+    python predict.py
 """
 import argparse
 import sys
@@ -16,9 +15,8 @@ import numpy as np
 from pathlib import Path
 from sklearn.base import BaseEstimator, TransformerMixin
 
-# -----------------------------------------------------------------------------
-# 必須包含與 train_enhanced.py 完全相同的類別定義
-# -----------------------------------------------------------------------------
+# Feature extractors must mirror the definitions in train_enhanced.py so that
+# joblib can rebuild the pipeline on load.
 
 class DiffSimilarityExtractor(BaseEstimator, TransformerMixin):
     def __init__(self):
@@ -60,11 +58,9 @@ class PathTokenExtractor(BaseEstimator, TransformerMixin):
 
 
 def get_git_diff(cached=True):
-    """獲取 git diff 內容"""
     cmd = ["git", "diff", "--cached"] if cached else ["git", "diff"]
     try:
-
-        cmd += ["--no-color"] 
+        cmd += ["--no-color"]
         result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace')
         if result.returncode != 0:
             return None
@@ -73,21 +69,16 @@ def get_git_diff(cached=True):
         return None
 
 def get_git_stats(cached=True):
-    """獲取數值統計 (files_changed, additions, deletions)"""
     cmd = ["git", "diff", "--cached", "--numstat"] if cached else ["git", "diff", "--numstat"]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace')
         if not result.stdout:
             return 0, 0, 0
-            
-        files_changed = 0
-        additions = 0
-        deletions = 0
-        
+        files_changed = additions = deletions = 0
         for line in result.stdout.splitlines():
             parts = line.split()
             if len(parts) >= 2:
-                # Binary files show as '-'
+                # Binary files appear as '-'
                 adds = 0 if parts[0] == '-' else int(parts[0])
                 dels = 0 if parts[1] == '-' else int(parts[1])
                 files_changed += 1
@@ -105,32 +96,31 @@ def main():
 
     model_path = Path(args.model)
     if not model_path.exists():
-        print(f"❌ Model not found at {model_path}")
-        print("   Please run: python train_enhanced.py --data ...")
+        print(f"model not found at {model_path}")
+        print("   run: python train_enhanced.py --data ...")
         sys.exit(1)
 
     try:
         model = joblib.load(model_path)
     except Exception as e:
-        print(f"❌ Failed to load model: {e}")
-        print("   (Ensure you have defined the same custom extractor classes in this script)")
+        print(f"failed to load model: {e}")
         sys.exit(1)
 
-    print("🔍 Analyzing git changes...")
+    print("analyzing git changes...")
     diff_text = get_git_diff(cached=not args.unstaged)
-    
+
     if not diff_text:
-        target = "Unstaged" if args.unstaged else "Staged"
-        print(f"⚠️  No {target.lower()} changes found.")
+        target = "unstaged" if args.unstaged else "staged"
+        print(f"no {target} changes found")
         if not args.unstaged:
-            print("   (Try 'git add <file>' first, or use --unstaged)")
+            print("   (try 'git add <file>' first, or pass --unstaged)")
         sys.exit(0)
 
     files_changed, additions, deletions = get_git_stats(cached=not args.unstaged)
     add_del_ratio = additions / (deletions + 1)
 
     input_df = pd.DataFrame([{
-        'diff_text': diff_text[:20000], 
+        'diff_text': diff_text[:20000],
         'files_changed': files_changed,
         'additions': additions,
         'deletions': deletions,
@@ -139,22 +129,14 @@ def main():
 
     try:
         pred_label = model.predict(input_df)[0]
-        
-        confidence_msg = ""
-        if hasattr(model, "decision_function"):
-             pass 
-
-        print("\n" + "="*40)
-        print(f"🤖 Suggested Type: \033[1;32m{pred_label}\033[0m")
-        print("="*40)
-        
+        print("\n" + "=" * 40)
+        print(f"Suggested type: \033[1;32m{pred_label}\033[0m")
+        print("=" * 40)
         print(f"\nStats: +{additions} / -{deletions} lines in {files_changed} files")
-        
         print(f"\nReady to commit? Copy this:\n")
         print(f"git commit -m \"{pred_label}: <description>\"")
-        
     except Exception as e:
-        print(f"❌ Prediction failed: {e}")
+        print(f"prediction failed: {e}")
         import traceback
         traceback.print_exc()
 

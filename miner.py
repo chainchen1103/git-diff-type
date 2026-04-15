@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""
-miner.py — Mining existing git repositories for Conventional Commits (Multi-threaded).
-
-Optimized for speed using ThreadPoolExecutor to run git commands in parallel.
-"""
+"""Mine Conventional Commits from a local git repository in parallel."""
 import argparse
 import json
 import re
@@ -108,7 +104,7 @@ def mine_repo(repo_path, output_file, limit=None, max_workers=10):
         print(f"Error: {repo_path} is not a valid git repository.")
         return
 
-    print(f"⛏️  Mining {repo_path} using {max_workers} threads...")
+    print(f"mining {repo_path} using {max_workers} threads...")
     
     # Capture Log
     log_cmd = ["git", "log", "--pretty=format:%H|~|%at|~|%s", "--no-merges"]
@@ -123,7 +119,7 @@ def mine_repo(repo_path, output_file, limit=None, max_workers=10):
     # Pre-filtering
     tasks = []
     lines = log_out.splitlines()
-    print(f"🔍 Scanning {len(lines)} commits for Conventional Commits format...")
+    print(f"scanning {len(lines)} commits for Conventional Commits format...")
 
     for line in lines:
         parts = line.split("|~|", 2)
@@ -139,7 +135,7 @@ def mine_repo(repo_path, output_file, limit=None, max_workers=10):
     if limit:
         tasks = tasks[:limit]
 
-    print(f"🚀 Found {len(tasks)} candidates. Fetching diffs in parallel...")
+    print(f"found {len(tasks)} candidates; fetching diffs in parallel...")
     
     # Parallel Execution
     results = []
@@ -168,7 +164,7 @@ def mine_repo(repo_path, output_file, limit=None, max_workers=10):
             if res:
                 results.append(res)
 
-    print(f"\n✅ Finished mining. Extracted {len(results)} valid datasets.")
+    print(f"\nfinished mining; extracted {len(results)} records")
     
     # Write to file
     out_path = Path(output_file)
@@ -178,7 +174,7 @@ def mine_repo(repo_path, output_file, limit=None, max_workers=10):
         for r in results:
             f.write(json.dumps(r, ensure_ascii=False) + "\n")
             
-    print(f"💾 Saved to {out_path}")
+    print(f"saved to {out_path}")
 
 def main():
     parser = argparse.ArgumentParser(description="Mine Conventional Commits (Multi-threaded)")
