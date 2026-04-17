@@ -55,6 +55,10 @@ gca config push ask     # prompt before push every time
 gca config push never   # commit only
 gca config push auto    # push without asking (default)
 gca config push         # show current value
+
+gca config remote upstream  # always push to upstream
+gca config remote           # show current remote
+gca --remote origin         # one-off: push to origin this time
 ```
 
 CLI flags still override the stored setting for a single invocation.
@@ -81,9 +85,6 @@ within 1e-6.
 
 ## Roadmap
 
-- **Remote selection** — `gca config push-remote <name>` and `--remote
-  <name>` to pick which remote receives the push, resolving the same
-  way as `gca.push` (flag > git config > default).
 - **Scoped staging** — `gca ./src ./tests/foo.py` should forward the
   paths to `git add` instead of running `git add -A`, then continue
   straight into the usual classify → pick → subject → commit → push

@@ -64,8 +64,11 @@ pub fn commit(message: &str) -> Result<()> {
     run_inherit(&["commit", "-m", message])
 }
 
-pub fn push() -> Result<()> {
-    run_inherit(&["push"])
+pub fn push(remote: Option<&str>) -> Result<()> {
+    match remote {
+        Some(r) => run_inherit(&["push", r]),
+        None => run_inherit(&["push"]),
+    }
 }
 
 pub fn get_config(key: &str) -> Option<String> {

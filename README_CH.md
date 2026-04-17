@@ -53,6 +53,10 @@ gca config push ask     # 每次 push 前都問
 gca config push never   # 只 commit 不 push
 gca config push auto    # 自動 push（預設）
 gca config push         # 印出目前設定
+
+gca config remote upstream  # 永遠 push 到 upstream
+gca config remote           # 印出目前 remote
+gca --remote origin         # 當次：push 到 origin
 ```
 
 CLI flag 優先於 config，所以單次要變更行為還是可以直接帶 flag。
@@ -77,9 +81,6 @@ pass，並和 `predict_proba` 比對誤差 <1e-6。
 
 ## Roadmap
 
-- **Remote 選擇** — `gca config push-remote <name>` 與 `--remote <name>`
-  可指定 push 的目標 remote，解析順序和 `gca.push` 相同
-  （flag > git config > default）。
 - **自訂 add 範圍** — `gca ./src ./tests/foo.py` 會把 paths 傳給 `git
   add`，接著進入一般的 classify → pick → subject → commit → push 流程。
   不帶參數的 `gca` 仍保持目前的 add-all 行為。

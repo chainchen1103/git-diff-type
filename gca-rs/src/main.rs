@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use model::Model;
 
 const PUSH_CONFIG_KEY: &str = "gca.push";
+const REMOTE_CONFIG_KEY: &str = "gca.remote";
 
 #[derive(Parser, Debug)]
 #[command(name = "gca", about = "Git commit type analyzer")]
@@ -35,6 +36,10 @@ struct Cli {
     #[arg(long, global = true)]
     confirm_push: bool,
 
+    /// One-off: push to this remote (overrides `gca.remote`).
+    #[arg(long, global = true)]
+    remote: Option<String>,
+
     #[command(subcommand)]
     command: Option<Cmd>,
 }
@@ -52,6 +57,8 @@ enum Cmd {
 enum ConfigCmd {
     /// Set or show the default push behavior: auto | ask | never.
     Push { mode: Option<String> },
+    /// Set or show the default push remote (e.g. origin, upstream).
+    Remote { name: Option<String> },
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -100,7 +107,24 @@ fn handle_subcommand(cmd: &Cmd) -> Result<()> {
                 _ => anyhow::bail!("invalid mode {m:?}; expected auto | ask | never"),
             }
         }
+        Cmd::Config { what: ConfigCmd::Remote { name: None } } => {
+            let cur = git::get_config(REMOTE_CONFIG_KEY)
+                .unwrap_or_else(|| "(default)".to_string());
+            println!("{REMOTE_CONFIG_KEY} = {cur}");
+            Ok(())
+        }
+        Cmd::Config { what: ConfigCmd::Remote { name: Some(n) } } => {
+            git::set_config_global(REMOTE_CONFIG_KEY, n)
+                .context("failed to update git config")?;
+            println!("set {REMOTE_CONFIG_KEY} = {n}");
+            Ok(())
+        }
     }
+}
+
+fn resolve_remote(flag: &Option<String>) -> Option<String> {
+    if flag.is_some() { return flag.clone(); }
+    git::get_config(REMOTE_CONFIG_KEY)
 }
 
 fn run_commit_flow(cli: &Cli) -> Result<()> {
@@ -173,15 +197,22 @@ fn run_commit_flow(cli: &Cli) -> Result<()> {
 
     git::commit(&message).context("git commit failed")?;
 
+    let remote = resolve_remote(&cli.remote);
+    let remote_ref = remote.as_deref();
+
     match resolve_push_mode(cli.no_push, cli.confirm_push) {
         PushMode::Never => Ok(()),
         PushMode::Ask => {
+            let prompt = match &remote {
+                Some(r) => format!("Push to {r}?"),
+                None => "Push to remote?".to_string(),
+            };
             let yes = Confirm::with_theme(&ColorfulTheme::default())
-                .with_prompt("Push to remote?")
+                .with_prompt(prompt)
                 .default(true)
                 .interact()?;
-            if yes { git::push().context("git push failed") } else { Ok(()) }
+            if yes { git::push(remote_ref).context("git push failed") } else { Ok(()) }
         }
-        PushMode::Auto => git::push().context("git push failed"),
+        PushMode::Auto => git::push(remote_ref).context("git push failed"),
     }
 }
