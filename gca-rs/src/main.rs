@@ -136,12 +136,12 @@ fn run_commit_flow(cli: &Cli) -> Result<()> {
         git::add_paths(&cli.paths).context("git add failed")?;
     }
 
-    let mut diff_text = git::diff(true).context("failed to read staged diff")?;
+    let mut diff_text = git::diff(true, &cli.paths).context("failed to read staged diff")?;
     if diff_text.is_empty() {
         if cli.paths.is_empty() {
             println!("no staged changes; running `git add -A`");
             git::add_all()?;
-            diff_text = git::diff(true).context("failed to read staged diff")?;
+            diff_text = git::diff(true, &cli.paths).context("failed to read staged diff")?;
         }
         if diff_text.is_empty() {
             println!("nothing to commit — working tree clean");
@@ -149,8 +149,8 @@ fn run_commit_flow(cli: &Cli) -> Result<()> {
         }
     }
 
-    let files = git::staged_files(true)?;
-    let stats = git::stats(true)?;
+    let files = git::staged_files(true, &cli.paths)?;
+    let stats = git::stats(true, &cli.paths)?;
 
     static EMBEDDED_MODEL: &[u8] = include_bytes!("../../out/model_v2.json");
     let model = match &cli.model {

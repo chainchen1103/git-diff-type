@@ -22,22 +22,36 @@ fn run(args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-pub fn diff(cached: bool) -> Result<String> {
-    let args: Vec<&str> = if cached {
+fn with_paths<'a>(base: Vec<&'a str>, paths: &'a [String]) -> Vec<&'a str> {
+    if paths.is_empty() {
+        return base;
+    }
+    let mut args = base;
+    args.push("--");
+    for p in paths {
+        args.push(p.as_str());
+    }
+    args
+}
+
+pub fn diff(cached: bool, paths: &[String]) -> Result<String> {
+    let base: Vec<&str> = if cached {
         vec!["diff", "--cached", "--no-color", "--no-ext-diff"]
     } else {
         vec!["diff", "--no-color", "--no-ext-diff"]
     };
+    let args = with_paths(base, paths);
     let out = run(&args)?;
     Ok(out.trim().to_string())
 }
 
-pub fn staged_files(cached: bool) -> Result<Vec<String>> {
-    let args: Vec<&str> = if cached {
+pub fn staged_files(cached: bool, paths: &[String]) -> Result<Vec<String>> {
+    let base: Vec<&str> = if cached {
         vec!["diff", "--cached", "--name-only"]
     } else {
         vec!["diff", "--name-only"]
     };
+    let args = with_paths(base, paths);
     let out = run(&args)?;
     Ok(out.lines().filter(|l| !l.is_empty()).map(|s| s.to_string()).collect())
 }
@@ -92,12 +106,13 @@ pub fn set_config_global(key: &str, value: &str) -> Result<()> {
     run_inherit(&["config", "--global", key, value])
 }
 
-pub fn stats(cached: bool) -> Result<Stats> {
-    let args: Vec<&str> = if cached {
+pub fn stats(cached: bool, paths: &[String]) -> Result<Stats> {
+    let base: Vec<&str> = if cached {
         vec!["diff", "--cached", "--numstat"]
     } else {
         vec!["diff", "--numstat"]
     };
+    let args = with_paths(base, paths);
     let out = run(&args)?;
     let mut s = Stats { files_changed: 0, additions: 0, deletions: 0 };
     for line in out.lines() {
