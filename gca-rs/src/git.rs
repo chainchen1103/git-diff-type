@@ -60,6 +60,14 @@ pub fn add_all() -> Result<()> {
     run_inherit(&["add", "-A"])
 }
 
+pub fn add_paths(paths: &[String]) -> Result<()> {
+    let mut args: Vec<&str> = vec!["add"];
+    for p in paths {
+        args.push(p.as_str());
+    }
+    run_inherit(&args)
+}
+
 pub fn commit(message: &str) -> Result<()> {
     run_inherit(&["commit", "-m", message])
 }

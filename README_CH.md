@@ -39,7 +39,8 @@ cargo build --release
 ## 使用
 
 ```
-gca                     # 預設：沒 staged 會自動 add、選 type、commit、push
+gca                     # 預設：沒 staged 會自動 add all、選 type、commit、push
+gca ./src tests/foo.py  # 只 stage 指定路徑，接著 commit + push
 gca --no-push           # 當次：只 commit 不 push
 gca --confirm-push      # 當次：push 前再問一次
 gca --dry-run           # 印出最終 commit message 但不執行
@@ -78,12 +79,6 @@ cd gca-rs && cargo build --release
 vocabs、StandardScaler、LinearSVC 每個 CV fold 的 coef/intercept、sigmoid
 校正）全部序列化成 JSON。`verify_export.py` 用純 NumPy 重實作 forward
 pass，並和 `predict_proba` 比對誤差 <1e-6。
-
-## Roadmap
-
-- **自訂 add 範圍** — `gca ./src ./tests/foo.py` 會把 paths 傳給 `git
-  add`，接著進入一般的 classify → pick → subject → commit → push 流程。
-  不帶參數的 `gca` 仍保持目前的 add-all 行為。
 
 ## 模型表現
 

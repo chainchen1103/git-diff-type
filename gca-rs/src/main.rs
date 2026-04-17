@@ -40,6 +40,10 @@ struct Cli {
     #[arg(long, global = true)]
     remote: Option<String>,
 
+    /// Paths to stage (forwarded to `git add`). Omit for `git add -A`.
+    #[arg(trailing_var_arg = true)]
+    paths: Vec<String>,
+
     #[command(subcommand)]
     command: Option<Cmd>,
 }
@@ -128,11 +132,17 @@ fn resolve_remote(flag: &Option<String>) -> Option<String> {
 }
 
 fn run_commit_flow(cli: &Cli) -> Result<()> {
+    if !cli.paths.is_empty() {
+        git::add_paths(&cli.paths).context("git add failed")?;
+    }
+
     let mut diff_text = git::diff(true).context("failed to read staged diff")?;
     if diff_text.is_empty() {
-        println!("no staged changes; running `git add -A`");
-        git::add_all()?;
-        diff_text = git::diff(true).context("failed to read staged diff")?;
+        if cli.paths.is_empty() {
+            println!("no staged changes; running `git add -A`");
+            git::add_all()?;
+            diff_text = git::diff(true).context("failed to read staged diff")?;
+        }
         if diff_text.is_empty() {
             println!("nothing to commit — working tree clean");
             return Ok(());

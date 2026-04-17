@@ -41,7 +41,8 @@ single executable has no runtime dependencies.
 ## Usage
 
 ```
-gca                     # default: stage if empty, pick, commit, push
+gca                     # default: stage all if empty, pick, commit, push
+gca ./src tests/foo.py  # stage only these paths, then commit + push
 gca --no-push           # one-off: commit only
 gca --confirm-push      # one-off: ask before pushing
 gca --dry-run           # print the resulting message without committing
@@ -82,13 +83,6 @@ CountVectorizer vocabs, StandardScaler, LinearSVC coef/intercept per CV
 fold, sigmoid calibrators) to JSON. `verify_export.py` re-implements the
 forward pass in pure NumPy and asserts agreement with `predict_proba`
 within 1e-6.
-
-## Roadmap
-
-- **Scoped staging** — `gca ./src ./tests/foo.py` should forward the
-  paths to `git add` instead of running `git add -A`, then continue
-  straight into the usual classify → pick → subject → commit → push
-  flow. Bare `gca` keeps the current add-all behavior.
 
 ## Model performance
 
