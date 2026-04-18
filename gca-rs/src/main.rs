@@ -55,6 +55,11 @@ enum Cmd {
         #[command(subcommand)]
         what: ConfigCmd,
     },
+    /// Preview which files would be staged, without staging them.
+    List {
+        #[arg(trailing_var_arg = true)]
+        paths: Vec<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -121,6 +126,16 @@ fn handle_subcommand(cmd: &Cmd) -> Result<()> {
             git::set_config_global(REMOTE_CONFIG_KEY, n)
                 .context("failed to update git config")?;
             println!("set {REMOTE_CONFIG_KEY} = {n}");
+            Ok(())
+        }
+        Cmd::List { paths } => {
+            let out = git::add_dry_run(paths).context("git add --dry-run failed")?;
+            let trimmed = out.trim();
+            if trimmed.is_empty() {
+                println!("nothing to stage");
+            } else {
+                print!("{out}");
+            }
             Ok(())
         }
     }

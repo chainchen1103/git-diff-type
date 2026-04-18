@@ -82,6 +82,18 @@ pub fn add_paths(paths: &[String]) -> Result<()> {
     run_inherit(&args)
 }
 
+pub fn add_dry_run(paths: &[String]) -> Result<String> {
+    let mut args: Vec<&str> = vec!["add", "--dry-run"];
+    if paths.is_empty() {
+        args.push("-A");
+    } else {
+        for p in paths {
+            args.push(p.as_str());
+        }
+    }
+    run(&args)
+}
+
 pub fn commit(message: &str) -> Result<()> {
     run_inherit(&["commit", "-m", message])
 }
