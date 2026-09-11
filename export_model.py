@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Serialize the trained sklearn pipeline to a single JSON file so a Rust
-(or any other non-Python) runtime can rebuild the forward pass.
+"""Serialize the trained sklearn pipeline to one JSON file so the Rust CLI
+can rebuild the forward pass without Python.
 
 Feature order encoded in the coef matrix:
     [0                              : 10000)   diff_tfidf   (l2-normalized)
@@ -63,20 +63,25 @@ def main():
     path_cv = path_pipe.named_steps["vect"]
     ext_cv = ext_pipe.named_steps["vect"]
 
+    for vect in (tfidf, path_cv, ext_cv):
+        if vect.analyzer != "word" or tuple(vect.ngram_range) != (1, 1):
+            sys.exit(f"{type(vect).__name__}: the Rust runtime only supports word unigrams")
+
+    layout, offset = {}, 0
+    for name, size in [
+        ("diff_tfidf", len(tfidf.vocabulary_)),
+        ("path_bow", len(path_cv.vocabulary_)),
+        ("ext_bow", len(ext_cv.vocabulary_)),
+        ("diff_sim", 1),
+        ("numeric", len(scaler.mean_)),
+    ]:
+        layout[name] = [offset, offset + size]
+        offset += size
+
     payload = {
         "schema_version": 1,
         "classes": list(clf.classes_),
-        "feature_layout": {
-            "diff_tfidf": [0, len(tfidf.vocabulary_)],
-            "path_bow":   [len(tfidf.vocabulary_),
-                           len(tfidf.vocabulary_) + len(path_cv.vocabulary_)],
-            "ext_bow":    [len(tfidf.vocabulary_) + len(path_cv.vocabulary_),
-                           len(tfidf.vocabulary_) + len(path_cv.vocabulary_) + len(ext_cv.vocabulary_)],
-            "diff_sim":   [len(tfidf.vocabulary_) + len(path_cv.vocabulary_) + len(ext_cv.vocabulary_),
-                           len(tfidf.vocabulary_) + len(path_cv.vocabulary_) + len(ext_cv.vocabulary_) + 1],
-            "numeric":    [len(tfidf.vocabulary_) + len(path_cv.vocabulary_) + len(ext_cv.vocabulary_) + 1,
-                           len(tfidf.vocabulary_) + len(path_cv.vocabulary_) + len(ext_cv.vocabulary_) + 5],
-        },
+        "feature_layout": layout,
         "tfidf": {
             "vocabulary": to_int_vocab(tfidf.vocabulary_),
             "idf": tfidf.idf_.tolist(),
@@ -119,7 +124,7 @@ def main():
     print(f"wrote {out}  ({size_mb:.2f} MB)")
     print(f"  classes      : {payload['classes']}")
     print(f"  folds        : {len(payload['calibrated_folds'])}")
-    print(f"  feature dims : {sum(len(v) for k, v in [('tfidf', tfidf.vocabulary_), ('path', path_cv.vocabulary_), ('ext', ext_cv.vocabulary_)]) + 5}")
+    print(f"  feature dims : {offset}")
 
 
 if __name__ == "__main__":

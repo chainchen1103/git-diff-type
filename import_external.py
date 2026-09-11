@@ -191,7 +191,6 @@ def main():
             lbl = rec["label"]
             if args.per_label and per_label[lbl] >= args.per_label:
                 skipped_cap += 1
-                # Early exit once every label has hit its cap.
                 if all(per_label[k] >= args.per_label for k in ALL_LABELS):
                     print("  all labels at cap, stopping early")
                     break

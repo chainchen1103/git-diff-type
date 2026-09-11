@@ -12,9 +12,7 @@ Usage:
 import argparse
 import json
 import re
-import sys
 from pathlib import Path
-from typing import List, Set
 
 import joblib
 import numpy as np
@@ -35,13 +33,6 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.svm import LinearSVC
 from sklearn.calibration import CalibratedClassifierCV
-
-try:
-    from skl2onnx import to_onnx
-    from skl2onnx.common.data_types import StringTensorType, FloatTensorType
-    HAS_ONNX = True
-except ImportError:
-    HAS_ONNX = False
 
 
 class FileExtensionExtractor(BaseEstimator, TransformerMixin):
@@ -155,7 +146,6 @@ def main():
     parser = argparse.ArgumentParser(description="Train enhanced commit classifier")
     parser.add_argument("--data", required=True, help="Path to JSONL dataset(s) or directory")
     parser.add_argument("--model", default="out/model_v2.joblib", help="Output model path")
-    parser.add_argument("--onnx", default="out/model_v2.onnx", help="Output ONNX path")
     parser.add_argument("--cm_out", default="out/confusion_matrix.png", help="Path to save confusion matrix image")
     parser.add_argument("--max_diff_len", type=int, default=20000, help="Truncate diff text")
     args = parser.parse_args()
@@ -198,15 +188,12 @@ def main():
             ]), 'diff_text'),
 
             ('diff_sim', DiffSimilarityExtractor(), 'diff_text'),
-            
-            # 5. 數值特徵
+
             ('numeric', StandardScaler(), ['files_changed', 'additions', 'deletions', 'add_del_ratio']),
         ],
         remainder='drop'
     )
 
-    # CalibratedClassifierCV wrap gives LinearSVC a true predict_proba so the
-    # CLI can show top-k probabilities directly.
     base_svc = LinearSVC(class_weight='balanced', random_state=42, max_iter=5000)
     clf = CalibratedClassifierCV(base_svc, method='sigmoid', cv=3)
 
@@ -235,7 +222,6 @@ def main():
                 sns.heatmap(cm, annot=True, fmt='d', xticklabels=labels, yticklabels=labels, cmap='Blues')
             else:
                 plt.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
-                plt.title("Confusion Matrix")
                 plt.colorbar()
                 tick_marks = np.arange(len(labels))
                 plt.xticks(tick_marks, labels, rotation=45, ha='right')
@@ -264,23 +250,6 @@ def main():
 
     with open(Path(args.model).parent / 'labels.txt', 'w') as f:
         f.write('\n'.join(labels))
-
-    if HAS_ONNX and args.onnx:
-        print("exporting to ONNX...")
-        try:
-            initial_types = [
-                ('diff_text', StringTensorType([None, 1])),
-                ('files_changed', FloatTensorType([None, 1])),
-                ('additions', FloatTensorType([None, 1])),
-                ('deletions', FloatTensorType([None, 1])),
-                ('add_del_ratio', FloatTensorType([None, 1])),
-            ]
-            onx = to_onnx(model, X_train[:1], options={id(clf): {'zipmap': False}})
-            with open(args.onnx, "wb") as f:
-                f.write(onx.SerializeToString())
-            print(f"   ONNX saved to {args.onnx}")
-        except Exception as e:
-            print(f"ONNX export failed: {e}")
 
 if __name__ == '__main__':
     main()
