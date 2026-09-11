@@ -22,16 +22,13 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Iterable, List
 
-# Force UTF-8 so emoji in print() works under Windows cp950.
+# Windows consoles default to a legacy code page such as cp950.
 try:
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
 except Exception:
     pass
 
-# ---------------------------------------------------------------------------
-# IO
-# ---------------------------------------------------------------------------
 
 def expand_inputs(inputs: List[str]) -> List[Path]:
     out: List[Path] = []
@@ -56,7 +53,7 @@ def iter_rows(paths: Iterable[Path]):
                 try:
                     for obj in json.load(f):
                         if isinstance(obj, dict):
-                            yield p.name, obj
+                            yield obj
                     continue
                 except Exception:
                     f.seek(0)
@@ -65,14 +62,10 @@ def iter_rows(paths: Iterable[Path]):
                 if not ln:
                     continue
                 try:
-                    yield p.name, json.loads(ln)
+                    yield json.loads(ln)
                 except Exception as e:
                     print(f"[warn] {p.name}:{i} invalid JSON: {e}", file=sys.stderr)
 
-
-# ---------------------------------------------------------------------------
-# Normalization / hashing
-# ---------------------------------------------------------------------------
 
 _VOLATILE = re.compile(r"^(index [0-9a-f]+\.\.[0-9a-f]+.*|@@ .*|commit [0-9a-f]+|"
                         r"Author:.*|Date:.*|\s*)$")
@@ -89,10 +82,6 @@ def normalize_diff(diff_text: str) -> str:
 def md5_of(text: str) -> str:
     return hashlib.md5(text.encode("utf-8", errors="replace")).hexdigest()
 
-
-# ---------------------------------------------------------------------------
-# SimHash (pure python, 64-bit)
-# ---------------------------------------------------------------------------
 
 def _shingles(text: str, n: int = 5) -> List[str]:
     toks = re.findall(r"\w+", text.lower())
@@ -119,8 +108,8 @@ def hamming(a: int, b: int) -> int:
 
 
 def banded_near_dup(sigs: List[int], threshold: int, bands: int = 4):
-    """Return set of indices to drop (near-dup of an earlier index).
-    Uses 4x16-bit LSH banding — any shared band triggers Hamming check."""
+    """Return indices that are near-dups of an earlier index. Any shared
+    band makes two signatures candidates for the Hamming check."""
     assert 64 % bands == 0
     band_bits = 64 // bands
     mask = (1 << band_bits) - 1
@@ -144,22 +133,20 @@ def banded_near_dup(sigs: List[int], threshold: int, bands: int = 4):
     return drop
 
 
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", nargs="+", required=True,
-                    help="Files or dirs (priority order — first-seen wins)")
+                    help="Files or dirs in priority order; first-seen wins")
     ap.add_argument("--output", required=True)
     ap.add_argument("--near-dup", action="store_true",
-                    help="Enable SimHash pass (slower, needs all diffs in memory)")
+                    help="Enable SimHash pass (slower)")
     ap.add_argument("--hamming", type=int, default=3,
                     help="Max Hamming distance for near-dup (default 3 / 64 bits)")
     args = ap.parse_args()
 
-    paths = expand_inputs(args.input)
+    out_path = Path(args.output)
+    # A glob like datasets/*.jsonl also matches the previous output.
+    paths = [p for p in expand_inputs(args.input) if p.resolve() != out_path.resolve()]
     if not paths:
         print("no inputs found", file=sys.stderr)
         sys.exit(1)
@@ -169,13 +156,13 @@ def main():
 
     seen_sha = set()
     seen_diff = set()
-    kept = []        # records
-    diffs_norm = []  # parallel, for SimHash
+    kept = []
+    sigs = []  # parallel to kept, for SimHash
     before = Counter()
     dropped_sha = dropped_diff = 0
     total = 0
 
-    for src, row in iter_rows(paths):
+    for row in iter_rows(paths):
         total += 1
         label = row.get("label")
         if label:
@@ -204,17 +191,15 @@ def main():
 
         kept.append(row)
         if args.near_dup:
-            diffs_norm.append(norm)
+            sigs.append(simhash64(norm))
 
     dropped_near = 0
     if args.near_dup and kept:
-        print(f"computing SimHash for {len(kept)} records...")
-        sigs = [simhash64(d) for d in diffs_norm]
+        print(f"checking near-dups among {len(kept)} records...")
         drop_idx = banded_near_dup(sigs, args.hamming)
         dropped_near = len(drop_idx)
         kept = [r for i, r in enumerate(kept) if i not in drop_idx]
 
-    out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8") as f:
         for r in kept:
