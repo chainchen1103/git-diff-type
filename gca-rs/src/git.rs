@@ -22,40 +22,6 @@ fn run(args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-fn with_paths<'a>(base: Vec<&'a str>, paths: &'a [String]) -> Vec<&'a str> {
-    if paths.is_empty() {
-        return base;
-    }
-    let mut args = base;
-    args.push("--");
-    for p in paths {
-        args.push(p.as_str());
-    }
-    args
-}
-
-pub fn diff(cached: bool, paths: &[String]) -> Result<String> {
-    let base: Vec<&str> = if cached {
-        vec!["diff", "--cached", "--no-color", "--no-ext-diff"]
-    } else {
-        vec!["diff", "--no-color", "--no-ext-diff"]
-    };
-    let args = with_paths(base, paths);
-    let out = run(&args)?;
-    Ok(out.trim().to_string())
-}
-
-pub fn staged_files(cached: bool, paths: &[String]) -> Result<Vec<String>> {
-    let base: Vec<&str> = if cached {
-        vec!["diff", "--cached", "--name-only"]
-    } else {
-        vec!["diff", "--name-only"]
-    };
-    let args = with_paths(base, paths);
-    let out = run(&args)?;
-    Ok(out.lines().filter(|l| !l.is_empty()).map(|s| s.to_string()).collect())
-}
-
 fn run_inherit(args: &[&str]) -> Result<()> {
     let status = Command::new("git")
         .args(args)
@@ -70,32 +36,70 @@ fn run_inherit(args: &[&str]) -> Result<()> {
     Ok(())
 }
 
+fn with_paths<'a>(mut args: Vec<&'a str>, paths: &'a [String]) -> Vec<&'a str> {
+    if !paths.is_empty() {
+        args.push("--");
+        args.extend(paths.iter().map(String::as_str));
+    }
+    args
+}
+
+pub fn staged_diff(paths: &[String]) -> Result<String> {
+    let args = with_paths(vec!["diff", "--cached", "--no-color", "--no-ext-diff"], paths);
+    Ok(run(&args)?.trim().to_string())
+}
+
+/// Staged file names and line counts from a single `git diff --numstat -z`.
+pub fn staged_summary(paths: &[String]) -> Result<(Vec<String>, Stats)> {
+    let args = with_paths(vec!["diff", "--cached", "--numstat", "-z"], paths);
+    Ok(parse_numstat_z(&run(&args)?))
+}
+
+// Records are `adds\tdels\tpath\0`, or `adds\tdels\t\0old\0new\0` for a
+// rename. Binary files report `-` for both counts.
+fn parse_numstat_z(out: &str) -> (Vec<String>, Stats) {
+    let mut files = Vec::new();
+    let mut stats = Stats { files_changed: 0, additions: 0, deletions: 0 };
+    let mut fields = out.split('\0');
+    while let Some(record) = fields.next() {
+        let mut parts = record.splitn(3, '\t');
+        let (Some(adds), Some(dels), Some(path)) = (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        let path = if path.is_empty() {
+            fields.next();
+            fields.next().unwrap_or_default()
+        } else {
+            path
+        };
+        stats.files_changed += 1;
+        stats.additions += adds.parse::<u32>().unwrap_or(0);
+        stats.deletions += dels.parse::<u32>().unwrap_or(0);
+        files.push(path.to_string());
+    }
+    (files, stats)
+}
+
 pub fn add_all() -> Result<()> {
     run_inherit(&["add", "-A"])
 }
 
 pub fn add_paths(paths: &[String]) -> Result<()> {
-    let mut args: Vec<&str> = vec!["add"];
-    for p in paths {
-        args.push(p.as_str());
-    }
-    run_inherit(&args)
+    run_inherit(&with_paths(vec!["add"], paths))
 }
 
 pub fn add_dry_run(paths: &[String]) -> Result<String> {
-    let mut args: Vec<&str> = vec!["add", "--dry-run"];
     if paths.is_empty() {
-        args.push("-A");
+        run(&["add", "--dry-run", "-A"])
     } else {
-        for p in paths {
-            args.push(p.as_str());
-        }
+        run(&with_paths(vec!["add", "--dry-run"], paths))
     }
-    run(&args)
 }
 
-pub fn commit(message: &str) -> Result<()> {
-    run_inherit(&["commit", "-m", message])
+/// With paths, only those paths are committed and other staged changes stay staged.
+pub fn commit(message: &str, paths: &[String]) -> Result<()> {
+    run_inherit(&with_paths(vec!["commit", "-m", message], paths))
 }
 
 pub fn push(remote: Option<&str>) -> Result<()> {
@@ -118,25 +122,24 @@ pub fn set_config_global(key: &str, value: &str) -> Result<()> {
     run_inherit(&["config", "--global", key, value])
 }
 
-pub fn stats(cached: bool, paths: &[String]) -> Result<Stats> {
-    let base: Vec<&str> = if cached {
-        vec!["diff", "--cached", "--numstat"]
-    } else {
-        vec!["diff", "--numstat"]
-    };
-    let args = with_paths(base, paths);
-    let out = run(&args)?;
-    let mut s = Stats { files_changed: 0, additions: 0, deletions: 0 };
-    for line in out.lines() {
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 2 {
-            continue;
-        }
-        let adds: u32 = if parts[0] == "-" { 0 } else { parts[0].parse().unwrap_or(0) };
-        let dels: u32 = if parts[1] == "-" { 0 } else { parts[1].parse().unwrap_or(0) };
-        s.files_changed += 1;
-        s.additions += adds;
-        s.deletions += dels;
+#[cfg(test)]
+mod tests {
+    use super::parse_numstat_z;
+
+    #[test]
+    fn numstat_z_plain_binary_and_rename() {
+        let out = "3\t1\tsrc/a.rs\0-\t-\tlogo.png\x000\t2\t\0old/b.rs\0new/b.rs\0";
+        let (files, stats) = parse_numstat_z(out);
+        assert_eq!(files, ["src/a.rs", "logo.png", "new/b.rs"]);
+        assert_eq!(stats.files_changed, 3);
+        assert_eq!(stats.additions, 3);
+        assert_eq!(stats.deletions, 3);
     }
-    Ok(s)
+
+    #[test]
+    fn numstat_z_empty() {
+        let (files, stats) = parse_numstat_z("");
+        assert!(files.is_empty());
+        assert_eq!(stats.files_changed, 0);
+    }
 }

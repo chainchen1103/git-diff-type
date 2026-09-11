@@ -4,6 +4,7 @@ use std::path::PathBuf;
 #[path = "../src/features.rs"]
 mod features;
 #[path = "../src/model.rs"]
+#[allow(dead_code)]
 mod model;
 
 #[derive(Deserialize)]
@@ -46,15 +47,15 @@ fn python_rust_parity() {
         let feats = m.build_features(&case.diff_text, case.numeric);
         let probs = m.predict_proba(&feats);
         assert_eq!(probs.len(), case.expected_probs.len());
-        for c in 0..probs.len() {
-            let d = (probs[c] - case.expected_probs[c]).abs();
-            if d > max_diff { max_diff = d; }
+        for (c, (p, e)) in probs.iter().zip(&case.expected_probs).enumerate() {
+            let d = (p - e).abs();
+            max_diff = max_diff.max(d);
             if d > tol {
                 fails += 1;
                 if fails <= 5 {
                     eprintln!(
-                        "case {i} class {} ({}): rust={:.8} py={:.8} diff={:.3e}",
-                        c, fx.classes[c], probs[c], case.expected_probs[c], d
+                        "case {i} class {c} ({}): rust={p:.8} py={e:.8} diff={d:.3e}",
+                        fx.classes[c]
                     );
                 }
             }

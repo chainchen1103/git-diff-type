@@ -86,24 +86,20 @@ impl Model {
             + self.payload.scaler.mean.len()
     }
 
+    // Block order must match feature_layout in export_model.py.
     pub fn build_features(&self, diff_text: &str, numeric: [f64; 4]) -> Vec<f64> {
         let mut out = Vec::with_capacity(self.n_features());
 
-        // tfidf
         out.extend(features::tfidf_vec(diff_text, &self.payload.tfidf, &self.tfidf_re));
 
-        // path_bow
         let path_text = features::extract_path_tokens(diff_text);
         out.extend(features::count_vec(&path_text, &self.payload.path_bow, &self.path_bow_re));
 
-        // ext_bow
         let ext_text = features::extract_extensions(diff_text);
         out.extend(features::count_vec(&ext_text, &self.payload.ext_bow, &self.ext_bow_re));
 
-        // diff_sim
         out.push(features::jaccard(diff_text));
 
-        // numeric (scaled)
         for (i, v) in numeric.iter().enumerate() {
             let m = self.payload.scaler.mean[i];
             let s = self.payload.scaler.scale[i];
@@ -119,23 +115,20 @@ impl Model {
         let mut accum = vec![0.0_f64; n_classes];
 
         for fold in &self.payload.calibrated_folds {
-            let mut probs = vec![0.0_f64; n_classes];
-            for c in 0..n_classes {
-                // decision = coef[c] . x + intercept[c]
-                let coef = &fold.coef[c];
-                let mut d = fold.intercept[c];
-                for (k, fv) in features.iter().enumerate() {
-                    d += coef[k] * fv;
-                }
-                let z = fold.sigmoid_a[c] * d + fold.sigmoid_b[c];
-                probs[c] = 1.0 / (1.0 + z.exp());
-            }
+            let probs: Vec<f64> = (0..n_classes)
+                .map(|c| {
+                    let d = fold.coef[c]
+                        .iter()
+                        .zip(features)
+                        .fold(fold.intercept[c], |d, (w, x)| d + w * x);
+                    // sklearn's sigmoid calibration: p = 1 / (1 + exp(a * d + b)).
+                    1.0 / (1.0 + (fold.sigmoid_a[c] * d + fold.sigmoid_b[c]).exp())
+                })
+                .collect();
             let sum: f64 = probs.iter().sum();
-            if sum > 0.0 {
-                for p in probs.iter_mut() { *p /= sum; }
-            }
-            for c in 0..n_classes {
-                accum[c] += probs[c];
+            let norm = if sum > 0.0 { sum } else { 1.0 };
+            for (a, p) in accum.iter_mut().zip(&probs) {
+                *a += p / norm;
             }
         }
 
@@ -143,9 +136,13 @@ impl Model {
         accum
     }
 
+    pub fn prob(&self, probs: &[f64], label: &str) -> f64 {
+        self.payload.classes.iter().position(|c| c == label).map_or(0.0, |i| probs[i])
+    }
+
     pub fn topk<'a>(&'a self, probs: &[f64], k: usize) -> Vec<(&'a str, f64)> {
         let mut idx: Vec<usize> = (0..probs.len()).collect();
-        idx.sort_by(|a, b| probs[*b].partial_cmp(&probs[*a]).unwrap_or(std::cmp::Ordering::Equal));
+        idx.sort_by(|a, b| probs[*b].total_cmp(&probs[*a]));
         idx.into_iter()
             .take(k)
             .map(|i| (self.payload.classes[i].as_str(), probs[i]))

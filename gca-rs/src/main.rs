@@ -28,19 +28,19 @@ struct Cli {
     #[arg(long, global = true)]
     dry_run: bool,
 
-    /// One-off: commit but do not push (overrides `gca.push`).
+    /// Commit without pushing. Overrides `gca.push` for this run.
     #[arg(long, global = true)]
     no_push: bool,
 
-    /// One-off: ask before pushing (overrides `gca.push`).
+    /// Ask before pushing. Overrides `gca.push` for this run.
     #[arg(long, global = true)]
     confirm_push: bool,
 
-    /// One-off: push to this remote (overrides `gca.remote`).
+    /// Push to this remote. Overrides `gca.remote` for this run.
     #[arg(long, global = true)]
     remote: Option<String>,
 
-    /// Paths to stage (forwarded to `git add`). Omit for `git add -A`.
+    /// Paths to stage with `git add`. If omitted and nothing is staged, runs `git add -A`.
     #[arg(trailing_var_arg = true)]
     paths: Vec<String>,
 
@@ -66,7 +66,7 @@ enum Cmd {
 enum ConfigCmd {
     /// Set or show the default push behavior: auto | ask | never.
     Push { mode: Option<String> },
-    /// Set or show the default push remote (e.g. origin, upstream).
+    /// Set or show the default push remote, such as origin or upstream.
     Remote { name: Option<String> },
 }
 
@@ -130,8 +130,7 @@ fn handle_subcommand(cmd: &Cmd) -> Result<()> {
         }
         Cmd::List { paths } => {
             let out = git::add_dry_run(paths).context("git add --dry-run failed")?;
-            let trimmed = out.trim();
-            if trimmed.is_empty() {
+            if out.trim().is_empty() {
                 println!("nothing to stage");
             } else {
                 print!("{out}");
@@ -142,8 +141,7 @@ fn handle_subcommand(cmd: &Cmd) -> Result<()> {
 }
 
 fn resolve_remote(flag: &Option<String>) -> Option<String> {
-    if flag.is_some() { return flag.clone(); }
-    git::get_config(REMOTE_CONFIG_KEY)
+    flag.clone().or_else(|| git::get_config(REMOTE_CONFIG_KEY))
 }
 
 fn run_commit_flow(cli: &Cli) -> Result<()> {
@@ -151,21 +149,20 @@ fn run_commit_flow(cli: &Cli) -> Result<()> {
         git::add_paths(&cli.paths).context("git add failed")?;
     }
 
-    let mut diff_text = git::diff(true, &cli.paths).context("failed to read staged diff")?;
+    let mut diff_text = git::staged_diff(&cli.paths).context("failed to read staged diff")?;
     if diff_text.is_empty() {
         if cli.paths.is_empty() {
             println!("no staged changes; running `git add -A`");
             git::add_all()?;
-            diff_text = git::diff(true, &cli.paths).context("failed to read staged diff")?;
+            diff_text = git::staged_diff(&cli.paths).context("failed to read staged diff")?;
         }
         if diff_text.is_empty() {
-            println!("nothing to commit — working tree clean");
+            println!("nothing to commit");
             return Ok(());
         }
     }
 
-    let files = git::staged_files(true, &cli.paths)?;
-    let stats = git::stats(true, &cli.paths)?;
+    let (files, stats) = git::staged_summary(&cli.paths)?;
 
     static EMBEDDED_MODEL: &[u8] = include_bytes!("../../out/model_v2.json");
     let model = match &cli.model {
@@ -183,11 +180,19 @@ fn run_commit_flow(cli: &Cli) -> Result<()> {
     ];
     let feats = model.build_features(&diff_truncated, numeric);
     let probs = model.predict_proba(&feats);
-    let top = model.topk(&probs, cli.topk.max(1));
+    let mut top = model.topk(&probs, cli.topk.max(1));
 
-    let default_idx = heuristics::classify(&files)
-        .and_then(|hit| top.iter().position(|(l, _)| *l == hit.label))
-        .unwrap_or(0);
+    // A heuristic hit is pre-selected even when the model ranks it below top-k.
+    let default_idx = match heuristics::classify(&files) {
+        None => 0,
+        Some(hit) => {
+            let pos = top.iter().position(|(l, _)| *l == hit);
+            pos.unwrap_or_else(|| {
+                top.push((hit, model.prob(&probs, hit)));
+                top.len() - 1
+            })
+        }
+    };
 
     println!(
         "Stats: +{} / -{} lines in {} files",
@@ -220,7 +225,7 @@ fn run_commit_flow(cli: &Cli) -> Result<()> {
         return Ok(());
     }
 
-    git::commit(&message).context("git commit failed")?;
+    git::commit(&message, &cli.paths).context("git commit failed")?;
 
     let remote = resolve_remote(&cli.remote);
     let remote_ref = remote.as_deref();
