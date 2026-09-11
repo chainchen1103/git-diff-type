@@ -1,14 +1,14 @@
-// gca installer — extracts the embedded gca.exe to %LOCALAPPDATA%\gca,
-// adds the directory to the user PATH, and checks for git.
+// Extracts the embedded gca.exe to %LOCALAPPDATA%\gca, adds that directory
+// to the user PATH, and checks for git.
 
 use std::env;
 use std::fs;
 use std::io::{self, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
-use winreg::RegKey;
+use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE, REG_EXPAND_SZ};
+use winreg::{RegKey, RegValue};
 
 static GCA_EXE_BYTES: &[u8] = include_bytes!("../../target/release/gca.exe");
 
@@ -53,14 +53,17 @@ fn install_binary() -> io::Result<PathBuf> {
     Ok(dir)
 }
 
-fn add_to_path(dir: &PathBuf) -> io::Result<bool> {
+fn add_to_path(dir: &Path) -> io::Result<bool> {
     let hkcu = RegKey::predef(HKEY_CURRENT_USER);
     let env_key = hkcu.open_subkey_with_flags("Environment", KEY_READ | KEY_WRITE)?;
 
-    let current: String = env_key.get_value("Path").unwrap_or_default();
+    let current: String = match env_key.get_value("Path") {
+        Ok(v) => v,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e),
+    };
     let dir_str = dir.to_string_lossy();
 
-    // Check if already present (case-insensitive on Windows).
     let already = current
         .split(';')
         .any(|p| p.trim().eq_ignore_ascii_case(&dir_str));
@@ -73,16 +76,20 @@ fn add_to_path(dir: &PathBuf) -> io::Result<bool> {
     } else {
         format!("{};{}", current.trim_end_matches(';'), dir_str)
     };
-    env_key.set_value("Path", &new_path)?;
-
-    // Broadcast WM_SETTINGCHANGE so some terminals pick up the change.
+    // REG_EXPAND_SZ keeps entries such as %USERPROFILE%\... expanding.
+    env_key.set_raw_value("Path", &expand_sz(&new_path))?;
     broadcast_env_change();
-
     Ok(true)
 }
 
+fn expand_sz(s: &str) -> RegValue {
+    let bytes = s.encode_utf16().chain([0]).flat_map(u16::to_le_bytes).collect();
+    RegValue { bytes, vtype: REG_EXPAND_SZ }
+}
+
+// Best effort: broadcast WM_SETTINGCHANGE so Explorer and new terminals see
+// the updated PATH without signing out.
 fn broadcast_env_change() {
-    // Best-effort: ask explorer to reload environment variables.
     let _ = Command::new("powershell")
         .args([
             "-NoProfile", "-Command",
