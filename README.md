@@ -1,11 +1,13 @@
-# gca — Git Commit Analyzer
+# gca
 
 [中文](./README_CH.md)
 
-One command to go from dirty working tree to pushed commit.
-Analyzes the staged diff with ML to suggest a Conventional Commit type
-(`feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert`),
-prompts for the subject line, commits, and pushes.
+Git commit analyzer. One command takes a dirty working tree to a pushed
+commit: gca reads the staged diff, suggests a Conventional Commit type with
+a small ML model, asks for the subject line, then commits and pushes.
+
+Supported types: `feat` `fix` `docs` `style` `refactor` `perf` `test`
+`build` `ci` `chore` `revert`.
 
 ```
 $ gca
@@ -24,9 +26,9 @@ Stats: +42 / -7 lines in 3 files
 
 ## Install
 
-Run `gca-installer.exe` — it copies `gca.exe` to
-`%LOCALAPPDATA%\gca`, adds the directory to your user PATH, and checks
-that git is installed (offers to install via `winget` if missing).
+Run `gca-installer.exe`. It copies `gca.exe` to `%LOCALAPPDATA%\gca`, adds
+that directory to your user PATH, and installs git with `winget` if git is
+missing.
 
 Or build from source:
 
@@ -36,27 +38,31 @@ cargo build --release --bin gca
 # binary: target/release/gca.exe
 ```
 
+The installer embeds `target/release/gca.exe`, so build `gca` first and then
+run `cargo build --release --bin gca-installer`.
+
 ## Usage
 
 ```
-gca                        # auto-stage all → pick type → commit → push
-gca ./src tests/foo.py     # stage only these paths → commit → push
+gca                        # stage all if nothing is staged, pick a type, commit, push
+gca ./src tests/foo.py     # stage only these paths, then commit and push
+gca list ./src             # show what would be staged without staging it
 gca --dry-run              # print the suggestion without committing
-gca --no-push              # commit only, skip push
-gca --confirm-push         # ask before push
-gca --remote origin        # push to a specific remote this time
+gca --no-push              # commit only
+gca --confirm-push         # ask before pushing
+gca --remote origin        # push to this remote for one run
 gca --model other.json     # use a different model file
 ```
 
 ### Persistent settings
 
-Settings are stored via `git config` and persist across invocations.
-CLI flags override them for a single run.
+Settings live in your global git config. Command-line flags override them
+for a single run.
 
 ```
 gca config push ask         # always ask before pushing
-gca config push never       # never push (commit only)
-gca config push auto        # push without asking (default)
+gca config push never       # commit only, never push
+gca config push auto        # push without asking, the default
 gca config push             # show current value
 
 gca config remote upstream  # always push to upstream
@@ -65,30 +71,30 @@ gca config remote           # show current remote
 
 ### Heuristic
 
-A path-based heuristic covers `docs`, `test`, and `ci` — when all
-staged files match one rule, the corresponding type is pre-selected.
-You can still pick a different type.
+When every staged file matches the path rules for `docs`, `test`, or `ci`,
+that type is pre-selected. You can still pick another one.
 
 ## Model
 
-The classifier is a calibrated LinearSVC trained on Conventional Commit
-repositories. Model weights are embedded in the binary at build time,
-so the executable is fully self-contained (~11 MB).
+The classifier is a calibrated LinearSVC trained on repositories that follow
+Conventional Commits. Its weights are embedded at build time, so the 11 MB
+executable needs no other files.
 
 ### Retraining
 
 ```
 python miner.py --repo <path> --out datasets/<name>.jsonl
-python import_external.py --dataset commitbench --out datasets/commitbench.jsonl
-python dedupe.py --input datasets/*.jsonl --out datasets/_merged.jsonl
+python import_external.py --source commitbench --out datasets/commitbench.jsonl
+python dedupe.py --input datasets/*.jsonl --output datasets/_merged.jsonl
 python train_enhanced.py --data datasets/_merged.jsonl --model out/model_v2.joblib
 python export_model.py
-cd gca-rs && cargo build --release --bin gca
+python gca-rs/gen_fixtures.py
+cd gca-rs && cargo test --release && cargo build --release --bin gca
 ```
 
 ### Performance
 
 ![confusion_matrix](out/confusion_matrix.png)
 
-`refactor` is the weakest class — the signal mostly lives in intent,
-not in the diff surface.
+`refactor` is the weakest class. Its signal lives mostly in the intent
+behind a change, which the diff itself rarely shows.

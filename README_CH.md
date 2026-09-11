@@ -1,11 +1,13 @@
-# gca — Git Commit Analyzer
+# gca
 
 [English](./README.md)
 
-一個指令從 dirty working tree 到 push 完成。
-用 ML 分析 staged diff 建議 Conventional Commit 類型
-（`feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert`），
-輸入 subject、commit、push 全在一次互動裡完成。
+Git commit analyzer。一個指令從 dirty working tree 走到 push 完成：讀取
+staged diff，用 ML 模型建議 Conventional Commit 類型，輸入 subject 後直接
+commit 並 push。
+
+支援的類型：`feat` `fix` `docs` `style` `refactor` `perf` `test`
+`build` `ci` `chore` `revert`。
 
 ```
 $ gca
@@ -24,9 +26,8 @@ Stats: +42 / -7 lines in 3 files
 
 ## 安裝
 
-執行 `gca-installer.exe` — 會將 `gca.exe` 安裝到
-`%LOCALAPPDATA%\gca`、加入使用者 PATH，並檢查 git 是否已安裝
-（沒有的話會透過 `winget` 自動安裝）。
+執行 `gca-installer.exe`，它會把 `gca.exe` 複製到 `%LOCALAPPDATA%\gca` 並
+加入使用者 PATH。電腦上沒有 git 的話，會用 `winget` 裝好。
 
 或自行編譯：
 
@@ -36,55 +37,60 @@ cargo build --release --bin gca
 # 產出：target/release/gca.exe
 ```
 
+installer 會把 `target/release/gca.exe` 包進去，所以要先編 `gca`，再執行
+`cargo build --release --bin gca-installer`。
+
 ## 使用
 
 ```
-gca                        # 自動 stage 全部 → 選 type → commit → push
-gca ./src tests/foo.py     # 只 stage 指定路徑 → commit → push
-gca --dry-run              # 印出建議但不 commit
+gca                        # 沒有 staged 變更時自動 stage 全部，選 type、commit、push
+gca ./src tests/foo.py     # 只 stage 指定路徑，再 commit、push
+gca list ./src             # 列出會被 stage 的檔案，不實際 stage
+gca --dry-run              # 只印建議，不 commit
 gca --no-push              # 只 commit 不 push
-gca --confirm-push         # push 前確認
-gca --remote origin        # 當次 push 到指定 remote
-gca --model other.json     # 使用其他模型檔
+gca --confirm-push         # push 前先問
+gca --remote origin        # 這次 push 到指定 remote
+gca --model other.json     # 改用其他模型檔
 ```
 
 ### 持久設定
 
-設定透過 `git config` 儲存，CLI flag 可覆寫單次行為。
+設定存在全域 git config，CLI flag 只覆寫當次執行。
 
 ```
 gca config push ask         # 每次 push 前都問
 gca config push never       # 只 commit 不 push
-gca config push auto        # 自動 push（預設）
+gca config push auto        # 直接 push，預設值
 gca config push             # 印出目前設定
 
-gca config remote upstream  # 永遠 push 到 upstream
+gca config remote upstream  # 固定 push 到 upstream
 gca config remote           # 印出目前 remote
 ```
 
 ### 啟發式
 
-路徑啟發式涵蓋 `docs`、`test`、`ci` — 當所有 staged 檔案都符合同一條
-規則時，會自動預選對應的 type，你仍然可以改選其他。
+所有 staged 檔案都符合 `docs`、`test` 或 `ci` 的路徑規則時，會預選該類型，
+你還是可以改選別的。
 
 ## 模型
 
-分類器是用 Conventional Commit 的 repo 訓練的 calibrated LinearSVC。
-模型權重在編譯時嵌入 binary，執行檔完全獨立（約 11 MB）。
+分類器是 calibrated LinearSVC，訓練資料來自採用 Conventional Commits 的
+repo。權重在編譯時嵌入，11 MB 的執行檔不需要其他檔案。
 
 ### 重新訓練
 
 ```
 python miner.py --repo <path> --out datasets/<name>.jsonl
-python import_external.py --dataset commitbench --out datasets/commitbench.jsonl
-python dedupe.py --input datasets/*.jsonl --out datasets/_merged.jsonl
+python import_external.py --source commitbench --out datasets/commitbench.jsonl
+python dedupe.py --input datasets/*.jsonl --output datasets/_merged.jsonl
 python train_enhanced.py --data datasets/_merged.jsonl --model out/model_v2.joblib
 python export_model.py
-cd gca-rs && cargo build --release --bin gca
+python gca-rs/gen_fixtures.py
+cd gca-rs && cargo test --release && cargo build --release --bin gca
 ```
 
 ### 模型表現
 
 ![confusion_matrix](out/confusion_matrix.png)
 
-`refactor` 類別表現最弱——語意主要在改動意圖，而非 diff 表面。
+`refactor` 最弱。它的訊號多半藏在改動的意圖裡，diff 本身很難看出來。
