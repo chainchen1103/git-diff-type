@@ -36,10 +36,15 @@ MAX_DIFF_CHARS = 20000
 
 def count_diff_lines(diff_text: str):
     add = dele = 0
+    in_hunk = False
     for line in diff_text.splitlines():
-        if line.startswith("+") and not line.startswith("+++"):
+        if line.startswith("diff --git "):
+            in_hunk = False
+        elif line.startswith("@@ "):
+            in_hunk = True
+        elif line.startswith("+") and (in_hunk or not line.startswith("+++ ")):
             add += 1
-        elif line.startswith("-") and not line.startswith("---"):
+        elif line.startswith("-") and (in_hunk or not line.startswith("--- ")):
             dele += 1
     return add, dele
 
@@ -58,9 +63,12 @@ def rebuild_diff_from_mods(mods):
     for m in mods:
         old = m.get("old_path") or "/dev/null"
         new = m.get("new_path") or "/dev/null"
-        paths.append(new if new != "/dev/null" else old)
+        path = new if new != "/dev/null" else old
+        paths.append(path)
         body = m.get("diff") or ""
-        header = f"diff --git a/{old} b/{new}\n--- a/{old}\n+++ b/{new}\n"
+        old_header = f"a/{old}" if old != "/dev/null" else old
+        new_header = f"b/{new}" if new != "/dev/null" else new
+        header = f"diff --git a/{old if old != '/dev/null' else path} b/{new if new != '/dev/null' else path}\n--- {old_header}\n+++ {new_header}\n"
         chunks.append(header + body)
     return "\n".join(chunks), paths
 
@@ -111,9 +119,9 @@ def normalize_commitbench(row):
     if not diff_text.strip():
         return None
     additions, deletions = count_diff_lines(diff_text)
-    paths = re.findall(r"^\+\+\+ b/(.+)$", diff_text, re.MULTILINE)
+    paths = re.findall(r"^diff --git a/.+ b/(.+)$", diff_text, re.MULTILINE)
     if not paths:
-        paths = re.findall(r"^diff --git a/.+ b/(.+)$", diff_text, re.MULTILINE)
+        paths = re.findall(r"^\+\+\+ b/(.+)$", diff_text, re.MULTILINE)
     files_changed = len(set(paths)) or 1
     project = row.get("project") or row.get("repo") or "unknown/unknown"
     owner, _, name = str(project).partition("/")
@@ -151,6 +159,10 @@ def main():
                         help="HuggingFace token (if dataset is gated)")
     parser.add_argument("--progress-every", type=int, default=5000)
     args = parser.parse_args()
+    if args.limit <= 0 or args.progress_every <= 0:
+        parser.error("--limit and --progress-every must be positive")
+    if args.per_label < 0:
+        parser.error("--per-label must be non-negative")
 
     try:
         from datasets import load_dataset
@@ -200,6 +212,9 @@ def main():
             per_label[lbl] += 1
             total += 1
             if total >= args.limit:
+                break
+            if args.per_label and all(per_label[k] >= args.per_label for k in ALL_LABELS):
+                print("  all labels at cap, stopping early")
                 break
 
     print(f"\nWrote {total} records to {out_path}")

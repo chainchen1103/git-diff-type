@@ -1,5 +1,7 @@
 commits_label.*
 .venv/
+.venv-check/
+.uv-cache/
 .env
 temp_repos/
 datasets/

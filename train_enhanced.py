@@ -10,19 +10,13 @@ Usage:
         --cm_out out/confusion_matrix.png
 """
 import argparse
-import json
 import re
 from pathlib import Path
 
 import joblib
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-try:
-    import seaborn as sns
-    HAS_SEABORN = True
-except ImportError:
-    HAS_SEABORN = False
+from dedupe import iter_rows
 
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.compose import ColumnTransformer
@@ -108,7 +102,6 @@ class PathTokenExtractor(BaseEstimator, TransformerMixin):
 
 def load_data(data_path: str):
     print(f"loading data from {data_path}...")
-    data = []
     path = Path(data_path)
     
     files = []
@@ -117,62 +110,28 @@ def load_data(data_path: str):
     else:
         files = sorted(list(path.glob("*.json")) + list(path.glob("*.jsonl")))
     
-    print(f"   Found {len(files)} file(s).")
-    
-    for p in files:
-        with open(p, 'r', encoding='utf-8') as f:
-            try:
-                content = json.load(f)
-                if isinstance(content, list):
-                    data.extend(content)
-                    continue
-                elif isinstance(content, dict) and 'data' in content:
-                    data.extend(content['data'])
-                    continue
-            except json.JSONDecodeError:
-                pass
+    print(f"   Found {len(files)} files.")
+    return pd.DataFrame(iter_rows(files))
 
-            f.seek(0)
-            for line in f:
-                if line.strip():
-                    try:
-                        data.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        continue
-                        
-    return pd.DataFrame(data)
 
-def main():
-    parser = argparse.ArgumentParser(description="Train enhanced commit classifier")
-    parser.add_argument("--data", required=True, help="Path to JSONL dataset(s) or directory")
-    parser.add_argument("--model", default="out/model_v2.joblib", help="Output model path")
-    parser.add_argument("--cm_out", default="out/confusion_matrix.png", help="Path to save confusion matrix image")
-    parser.add_argument("--max_diff_len", type=int, default=20000, help="Truncate diff text")
-    args = parser.parse_args()
+FEATURE_COLUMNS = ['diff_text', 'files_changed', 'additions', 'deletions', 'add_del_ratio']
 
-    df = load_data(args.data)
-    if df.empty:
-        print("no data found")
-        return
 
-    df['diff_text'] = df['diff_text'].fillna('')
-    df['diff_text'] = df['diff_text'].apply(lambda x: x[:args.max_diff_len])
-
+def prepare_features(df, max_diff_len=20000):
+    if max_diff_len <= 0:
+        raise ValueError("max_diff_len must be positive")
+    df = df.copy()
+    if 'diff_text' not in df:
+        df['diff_text'] = ''
+    df['diff_text'] = df['diff_text'].fillna('').astype(str).str.slice(0, max_diff_len)
     for col in ['files_changed', 'additions', 'deletions']:
-        df[col] = pd.to_numeric(df.get(col, 0), errors='coerce').fillna(0)
-
+        if col not in df:
+            df[col] = 0.0
+        df[col] = pd.to_numeric(df[col], errors='coerce').replace([np.inf, -np.inf], 0).fillna(0).clip(lower=0)
     df['add_del_ratio'] = df['additions'] / (df['deletions'] + 1)
+    return df
 
-    print(f"training on {len(df)} samples")
-    print(f"   labels: {df['label'].unique()}")
-
-    X = df[['diff_text', 'files_changed', 'additions', 'deletions', 'add_del_ratio']]
-    y = df['label']
-
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.1, random_state=42, stratify=y
-    )
-
+def build_model():
     preprocessor = ColumnTransformer(
         transformers=[
             ('diff_tfidf', TfidfVectorizer(max_features=10000, stop_words='english'), 'diff_text'),
@@ -197,10 +156,52 @@ def main():
     base_svc = LinearSVC(class_weight='balanced', random_state=42, max_iter=5000)
     clf = CalibratedClassifierCV(base_svc, method='sigmoid', cv=3)
 
-    model = Pipeline([
+    return Pipeline([
         ('preprocessor', preprocessor),
         ('clf', clf)
     ])
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Train enhanced commit classifier")
+    parser.add_argument("--data", required=True, help="Path to JSONL dataset(s) or directory")
+    parser.add_argument("--model", default="out/model_v2.joblib", help="Output model path")
+    parser.add_argument("--cm_out", default="out/confusion_matrix.png", help="Path to save confusion matrix image")
+    parser.add_argument("--max_diff_len", type=int, default=20000, help="Truncate diff text")
+    args = parser.parse_args()
+    if args.max_diff_len <= 0:
+        parser.error("--max_diff_len must be positive")
+
+    df = load_data(args.data)
+    if df.empty:
+        parser.error("no data found")
+    if 'label' not in df:
+        parser.error("dataset is missing the label field")
+    df = prepare_features(df, args.max_diff_len)
+    df = df[df['label'].map(lambda value: isinstance(value, str) and bool(value.strip()))]
+    df = df[df['diff_text'].str.strip().ne('')]
+    before = len(df)
+    # A directory can contain both source corpora and their merged output.
+    df = df.drop_duplicates(subset=['diff_text'])
+    if len(df) != before:
+        print(f"removed {before - len(df)} repeated diffs before splitting")
+    counts = df['label'].value_counts()
+    if len(counts) < 2 or counts.min() < 4:
+        parser.error("training needs at least two labels and four distinct diffs per label")
+
+    print(f"training on {len(df)} samples")
+    print(f"   labels: {df['label'].unique()}")
+
+    X = df[FEATURE_COLUMNS]
+    y = df['label']
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=max(len(counts), int(np.ceil(len(df) * 0.1))), random_state=42, stratify=y
+    )
+    if y_train.value_counts().min() < 3:
+        parser.error("each label needs at least three training rows for calibration")
+
+    model = build_model()
 
     print("training model...")
     model.fit(X_train, y_train)
@@ -217,8 +218,13 @@ def main():
     if args.cm_out:
         print(f"writing confusion matrix plot -> {args.cm_out}")
         try:
+            import matplotlib.pyplot as plt
+            try:
+                import seaborn as sns
+            except ImportError:
+                sns = None
             plt.figure(figsize=(10, 8))
-            if HAS_SEABORN:
+            if sns is not None:
                 sns.heatmap(cm, annot=True, fmt='d', xticklabels=labels, yticklabels=labels, cmap='Blues')
             else:
                 plt.imshow(cm, interpolation='nearest', cmap=plt.cm.Blues)
@@ -248,7 +254,7 @@ def main():
     joblib.dump(model, args.model)
     print(f"\nmodel saved to {args.model}")
 
-    with open(Path(args.model).parent / 'labels.txt', 'w') as f:
+    with open(Path(args.model).parent / 'labels.txt', 'w', encoding='utf-8') as f:
         f.write('\n'.join(labels))
 
 if __name__ == '__main__':

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bit-exact verification of the JSON-exported model.
+"""Verify the JSON-exported model within a numerical tolerance.
 
 Re-implements the full forward pass in pure NumPy from out/model_v2.json,
 then compares against the original sklearn pipeline's predict_proba on a
@@ -25,7 +25,11 @@ from train_enhanced import (  # noqa: F401
     PathTokenExtractor,
     DiffSimilarityExtractor,
     FileExtensionExtractor,
+    FEATURE_COLUMNS,
+    prepare_features,
 )
+from dedupe import iter_rows
+from export_model import export_pipeline
 
 
 def tokenize(text, token_pattern, lowercase):
@@ -47,8 +51,9 @@ def build_tfidf_vec(diff_text, spec):
         nz = vec > 0
         vec[nz] = 1.0 + np.log(vec[nz])
     vec *= idf
-    if spec.get("norm") == "l2":
-        n = np.linalg.norm(vec)
+    norm = spec.get("norm")
+    if norm in ("l1", "l2"):
+        n = np.linalg.norm(vec, ord=1 if norm == "l1" else 2)
         if n > 0:
             vec /= n
     return vec
@@ -128,7 +133,9 @@ def build_feature_vector(row, payload):
 
 
 def sigmoid(x):
-    # CalibratedClassifierCV uses prob = 1 / (1 + exp(a*decision + b))
+    if x >= 0:
+        exp_neg = math.exp(-x)
+        return exp_neg / (1.0 + exp_neg)
     return 1.0 / (1.0 + math.exp(x))
 
 
@@ -141,38 +148,34 @@ def forward_pass(x, payload):
         decisions = coef @ x + intercept
         a = np.asarray(fold["sigmoid_a"], dtype=np.float64)
         b = np.asarray(fold["sigmoid_b"], dtype=np.float64)
-        probs = np.array([sigmoid(a[i] * decisions[i] + b[i]) for i in range(n_classes)])
-        s = probs.sum()
-        if s > 0:
-            probs = probs / s
+        calibrated = np.array([sigmoid(a[i] * decisions[i] + b[i]) for i in range(len(a))])
+        if n_classes == 2:
+            probs = np.array([1.0 - calibrated[0], calibrated[0]])
+        else:
+            s = calibrated.sum()
+            probs = calibrated / s if s > 0 else np.full(n_classes, 1.0 / n_classes)
         accum += probs
     accum /= len(payload["calibrated_folds"])
     return accum
 
 
 def load_samples(data_path, n, seed=0):
+    if n <= 0:
+        raise ValueError("sample count must be positive")
     rows = []
     p = Path(data_path)
     files = [p] if p.is_file() else sorted(list(p.glob("*.jsonl")) + list(p.glob("*.json")))
-    for fp in files:
-        with open(fp, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    rows.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
     rng = random.Random(seed)
-    rng.shuffle(rows)
-    rows = rows[:n]
-    df = pd.DataFrame(rows)
-    df["diff_text"] = df["diff_text"].fillna("").astype(str).str.slice(0, 20000)
-    for col in ["files_changed", "additions", "deletions"]:
-        df[col] = pd.to_numeric(df.get(col, 0), errors="coerce").fillna(0)
-    df["add_del_ratio"] = df["additions"] / (df["deletions"] + 1)
-    return df
+    for seen, row in enumerate(iter_rows(files), 1):
+        if len(rows) < n:
+            rows.append(row)
+        else:
+            index = rng.randrange(seen)
+            if index < n:
+                rows[index] = row
+    if not rows:
+        raise ValueError(f"no records found in {data_path}")
+    return prepare_features(pd.DataFrame(rows))
 
 
 def main():
@@ -183,9 +186,16 @@ def main():
     ap.add_argument("--n", type=int, default=50)
     ap.add_argument("--tol", type=float, default=1e-6)
     args = ap.parse_args()
+    if args.n <= 0:
+        ap.error("--n must be positive")
+    if not math.isfinite(args.tol) or args.tol < 0:
+        ap.error("--tol must be a finite non-negative number")
 
     payload = json.loads(Path(args.json).read_text(encoding="utf-8"))
     sk_model = joblib.load(args.model)
+    expected_payload = export_pipeline(sk_model)
+    if any(payload.get(key) != value for key, value in expected_payload.items()):
+        ap.error("JSON parameters differ from the trained model; re-run export_model.py with this model")
     sk_classes = list(sk_model.classes_)
     json_classes = payload["classes"]
     if sk_classes != json_classes:
@@ -195,14 +205,16 @@ def main():
     df = load_samples(args.data, args.n)
     print(f"loaded {len(df)} samples; comparing forward pass...")
 
-    feature_cols = ["diff_text", "files_changed", "additions", "deletions", "add_del_ratio"]
-    sk_probs = sk_model.predict_proba(df[feature_cols])
+    sk_probs = sk_model.predict_proba(df[FEATURE_COLUMNS])
 
     max_diff = 0.0
     mismatched = 0
     for i, row in df.reset_index(drop=True).iterrows():
         x = build_feature_vector(row, payload)
         my_probs = forward_pass(x, payload)
+        if not np.isfinite(my_probs).all() or not np.isfinite(sk_probs[i]).all():
+            print(f"FAIL: non-finite probabilities for sample {i}")
+            sys.exit(1)
         diff = np.abs(my_probs - sk_probs[i]).max()
         if diff > max_diff:
             max_diff = diff

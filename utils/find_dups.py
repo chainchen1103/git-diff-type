@@ -11,18 +11,22 @@ def load_json_any(path: Path) -> Tuple[List[dict], List[int]]:
     rows: List[dict] = []
     line_numbers: List[int] = []
     if path.suffix.lower() == ".jsonl":
-        with path.open("r", encoding="utf-8") as f:
+        with path.open("r", encoding="utf-8-sig") as f:
             for i, ln in enumerate(f, 1):
                 ln = ln.strip()
                 if not ln:
                     continue
                 try:
-                    rows.append(json.loads(ln))
-                    line_numbers.append(i)
-                except Exception as e:
+                    obj = json.loads(ln)
+                    if isinstance(obj, dict):
+                        rows.append(obj)
+                        line_numbers.append(i)
+                    else:
+                        print(f"[warn] skip non-object at line {i}", file=sys.stderr)
+                except json.JSONDecodeError as e:
                     print(f"[warn] skip invalid JSON at line {i}: {e}", file=sys.stderr)
     else:
-        with path.open("r", encoding="utf-8") as f:
+        with path.open("r", encoding="utf-8-sig") as f:
             data = json.load(f)
         if isinstance(data, list):
             for i, obj in enumerate(data, 1):
@@ -79,7 +83,6 @@ def main() -> int:
     rows, lines = load_json_any(Path(args.input))
     dups = collect_dups(rows, lines, args.keys)
 
-    total_dup_pairs = sum(len(m) for m in dups.values())
     print(f"[i] scanned rows: {len(rows)}")
     for k in args.keys:
         cnt = len(dups.get(k, {}))

@@ -1,5 +1,3 @@
-// Path-based pre-classifier. Fires only when every staged file matches the
-// same category, so mixed commits fall through to the ML model.
 use regex::RegexSet;
 use std::sync::LazyLock;
 

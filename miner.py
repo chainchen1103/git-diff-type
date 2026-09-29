@@ -6,10 +6,10 @@ import re
 import subprocess
 import sys
 import time
-from collections import Counter
+from collections import Counter, deque
 from datetime import datetime, timezone
 from pathlib import Path
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 
 CONVENTIONAL_RE = re.compile(
     r"^(?P<type>feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(?:\((?P<scope>[^)]+)\))?!?:\s(?P<desc>.+)"
@@ -22,8 +22,8 @@ def run_git(cmd_list, cwd):
         )
         if result.returncode != 0:
             return None
-        return result.stdout.strip()
-    except Exception:
+        return result.stdout
+    except OSError:
         return None
 
 def parse_stats(stat_text):
@@ -34,12 +34,16 @@ def parse_stats(stat_text):
     deletions = 0
     top_exts = []
 
-    for line in stat_text.splitlines():
+    entries = iter(stat_text.split('\0') if '\0' in stat_text else stat_text.splitlines())
+    for line in entries:
         if not line.strip():
             continue
-        parts = line.split(maxsplit=2)
+        parts = line.split('\t', 2)
         if len(parts) == 3:
             adds, dels, filename = parts
+            if not filename and '\0' in stat_text:
+                next(entries, '')
+                filename = next(entries, '')
             files_changed += 1
             additions += 0 if adds == '-' else int(adds)
             deletions += 0 if dels == '-' else int(dels)
@@ -56,7 +60,7 @@ def parse_stats(stat_text):
     return files_changed, additions, deletions, top_ext_str
 
 def process_commit(sha, timestamp, subject, label, repo_path, max_diff_chars):
-    stat_cmd = ["git", "show", sha, "--numstat", "--format="]
+    stat_cmd = ["git", "show", sha, "--numstat", "-z", "--format=", "--no-relative", "--no-ext-diff", "--no-textconv"]
     stat_out = run_git(stat_cmd, repo_path)
     if stat_out is None:
         return None
@@ -64,7 +68,11 @@ def process_commit(sha, timestamp, subject, label, repo_path, max_diff_chars):
 
     # --format= drops the commit header. Without it the message, and so the
     # label, would leak into diff_text.
-    diff_cmd = ["git", "show", sha, "--format=", "--no-color", "--no-ext-diff"]
+    diff_cmd = [
+        "git", "show", sha, "--format=", "--no-color", "--no-ext-diff", "--no-textconv",
+        "--no-relative", "--src-prefix=a/", "--dst-prefix=b/", "--unified=3",
+        "--output-indicator-new=+", "--output-indicator-old=-", "--output-indicator-context= ",
+    ]
     diff_full = run_git(diff_cmd, repo_path)
 
     if not diff_full:
@@ -76,7 +84,7 @@ def process_commit(sha, timestamp, subject, label, repo_path, max_diff_chars):
         "repo": Path(repo_path).name,
         "sha": sha,
         "message": subject,
-        "diff_text": diff_full[:max_diff_chars],
+        "diff_text": diff_full.strip()[:max_diff_chars],
         "files_changed": files_changed,
         "additions": additions,
         "deletions": deletions,
@@ -86,17 +94,17 @@ def process_commit(sha, timestamp, subject, label, repo_path, max_diff_chars):
     }
 
 def mine_repo(repo_path, output_file, limit=None, max_workers=10):
+    if limit is not None and limit <= 0:
+        raise ValueError("limit must be positive")
+    if max_workers <= 0:
+        raise ValueError("workers must be positive")
     repo_path = Path(repo_path).resolve()
-    if not (repo_path / ".git").exists():
-        print(f"Error: {repo_path} is not a valid git repository.")
-        return
+    if run_git(["git", "rev-parse", "--git-dir"], repo_path) is None:
+        raise ValueError(f"{repo_path} is not a valid git repository")
 
     print(f"mining {repo_path} using {max_workers} threads...")
 
     log_cmd = ["git", "log", "--pretty=format:%H|~|%at|~|%s", "--no-merges"]
-    if limit:
-        log_cmd.extend(["-n", str(limit * 2)])
-
     log_out = run_git(log_cmd, repo_path)
     if not log_out:
         print("No commits found.")
@@ -116,25 +124,30 @@ def mine_repo(repo_path, output_file, limit=None, max_workers=10):
         if match:
             label = match.group("type")
             tasks.append((sha, timestamp, subject, label))
-
-    if limit:
-        tasks = tasks[:limit]
+            if limit and len(tasks) >= limit:
+                break
 
     print(f"found {len(tasks)} candidates; fetching diffs in parallel...")
 
-    results = []
+    extracted_count = 0
     processed_count = 0
     start_time = time.time()
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = [
-            executor.submit(process_commit, sha, ts, sub, lbl, repo_path, 20000)
-            for sha, ts, sub, lbl in tasks
-        ]
-
+    out_path = Path(output_file)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor, out_path.open("a", encoding="utf-8") as f:
+        pending = deque()
+        task_iter = iter(tasks)
+        for task in task_iter:
+            pending.append(executor.submit(process_commit, *task, repo_path, 20000))
+            if len(pending) >= max_workers:
+                break
         total_tasks = len(tasks)
-        for future in as_completed(futures):
-            res = future.result()
+        while pending:
+            res = pending.popleft().result()
+            task = next(task_iter, None)
+            if task is not None:
+                pending.append(executor.submit(process_commit, *task, repo_path, 20000))
             processed_count += 1
 
             if processed_count % 100 == 0 or processed_count == total_tasks:
@@ -144,16 +157,10 @@ def mine_repo(repo_path, output_file, limit=None, max_workers=10):
                 sys.stdout.flush()
 
             if res:
-                results.append(res)
+                f.write(json.dumps(res, ensure_ascii=False) + "\n")
+                extracted_count += 1
 
-    print(f"\nfinished mining; extracted {len(results)} records")
-
-    out_path = Path(output_file)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-
-    with out_path.open("a", encoding="utf-8") as f:
-        for r in results:
-            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    print(f"\nfinished mining; extracted {extracted_count} records")
 
     print(f"saved to {out_path}")
 
@@ -165,7 +172,10 @@ def main():
     parser.add_argument("--workers", type=int, default=16, help="Number of threads (default: 16)")
 
     args = parser.parse_args()
-    mine_repo(args.repo, args.out, args.limit, args.workers)
+    try:
+        mine_repo(args.repo, args.out, args.limit, args.workers)
+    except ValueError as error:
+        parser.error(str(error))
 
 if __name__ == "__main__":
     main()

@@ -2,12 +2,8 @@
 """Serialize the trained sklearn pipeline to one JSON file so the Rust CLI
 can rebuild the forward pass without Python.
 
-Feature order encoded in the coef matrix:
-    [0                              : 10000)   diff_tfidf   (l2-normalized)
-    [10000                          : 12000)   path_bow     (binary count)
-    [12000                          : 12100)   ext_bow      (binary count)
-    [12100                          : 12101)   diff_sim     (jaccard)
-    [12101                          : 12105)   numeric      (scaled)
+Feature order: diff TF-IDF, path tokens, extensions, Jaccard similarity,
+and scaled numeric stats. Vocabulary sizes determine the offsets.
 
 Usage:
     python export_model.py --model out/model_v2.joblib --out out/model_v2.json
@@ -24,6 +20,11 @@ from train_enhanced import (  # noqa: F401
     FileExtensionExtractor,
 )
 import joblib
+import numpy as np
+from sklearn.compose import ColumnTransformer
+from sklearn.feature_extraction.text import CountVectorizer, TfidfVectorizer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import StandardScaler
 
 
 def extract_transformer(preprocessor, name):
@@ -45,27 +46,53 @@ def dump_vocab(vectorizer):
     }
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--model", default="out/model_v2.joblib")
-    ap.add_argument("--out", default="out/model_v2.json")
-    args = ap.parse_args()
-
-    model = joblib.load(args.model)
+def export_pipeline(model):
+    if not isinstance(model, Pipeline) or list(model.named_steps) != ["preprocessor", "clf"]:
+        raise ValueError("expected a preprocessor followed by the calibrated classifier")
     pre = model.named_steps["preprocessor"]
     clf = model.named_steps["clf"]
+    if not isinstance(pre, ColumnTransformer):
+        raise ValueError("preprocessor must be a ColumnTransformer")
+    expected_order = ["diff_tfidf", "path_bow", "ext_bow", "diff_sim", "numeric"]
+    active = [(name, cols) for name, transformer, cols in pre.transformers_ if not isinstance(transformer, str) or transformer != "drop"]
+    if [name for name, _ in active] != expected_order or pre.transformer_weights:
+        raise ValueError("unsupported feature order or transformer weights")
+    if [cols for _, cols in active[:4]] != ["diff_text"] * 4:
+        raise ValueError("text transformers must use diff_text")
+    if list(active[4][1]) != ["files_changed", "additions", "deletions", "add_del_ratio"]:
+        raise ValueError("unsupported numeric feature order")
+    if clf.method != "sigmoid":
+        raise ValueError("the Rust runtime only supports sigmoid calibration")
 
     tfidf = extract_transformer(pre, "diff_tfidf")
     path_pipe = extract_transformer(pre, "path_bow")
     ext_pipe = extract_transformer(pre, "ext_bow")
     scaler = extract_transformer(pre, "numeric")
 
+    if not isinstance(tfidf, TfidfVectorizer) or not isinstance(scaler, StandardScaler):
+        raise ValueError("expected TF-IDF text features and a StandardScaler")
+    if type(extract_transformer(pre, "diff_sim")) is not DiffSimilarityExtractor:
+        raise ValueError("unsupported diff similarity extractor")
+    for pipe, extractor_type in ((path_pipe, PathTokenExtractor), (ext_pipe, FileExtensionExtractor)):
+        if not isinstance(pipe, Pipeline) or list(pipe.named_steps) != ["extractor", "vect"]:
+            raise ValueError("path and extension pipelines must contain extractor and vect")
+        if type(pipe.named_steps["extractor"]) is not extractor_type:
+            raise ValueError("unsupported path or extension extractor")
+        if type(pipe.named_steps["vect"]) is not CountVectorizer:
+            raise ValueError("path and extension features must use CountVectorizer")
+
     path_cv = path_pipe.named_steps["vect"]
     ext_cv = ext_pipe.named_steps["vect"]
 
     for vect in (tfidf, path_cv, ext_cv):
         if vect.analyzer != "word" or tuple(vect.ngram_range) != (1, 1):
-            sys.exit(f"{type(vect).__name__}: the Rust runtime only supports word unigrams")
+            raise ValueError(f"{type(vect).__name__}: the Rust runtime only supports word unigrams")
+        if vect.preprocessor is not None or vect.tokenizer is not None or vect.strip_accents is not None:
+            raise ValueError("custom tokenization and accent stripping are not supported")
+    if tfidf.binary or not tfidf.use_idf or tfidf.norm not in (None, "l1", "l2"):
+        raise ValueError("unsupported TF-IDF weighting")
+    if not scaler.with_mean or not scaler.with_std:
+        raise ValueError("numeric features require centering and scaling")
 
     layout, offset = {}, 0
     for name, size in [
@@ -108,23 +135,38 @@ def main():
 
     for cc in clf.calibrated_classifiers_:
         est = cc.estimator
+        rows = 1 if len(clf.classes_) == 2 else len(clf.classes_)
+        if est.coef_.shape != (rows, offset) or est.intercept_.shape != (rows,) or len(cc.calibrators) != rows:
+            raise ValueError("classifier dimensions do not match the exported features and classes")
+        if not np.array_equal(cc.classes, clf.classes_):
+            raise ValueError("calibrated fold class order differs from the classifier")
         payload["calibrated_folds"].append({
             "coef": est.coef_.tolist(),
             "intercept": est.intercept_.tolist(),
             "sigmoid_a": [float(cal.a_) for cal in cc.calibrators],
             "sigmoid_b": [float(cal.b_) for cal in cc.calibrators],
         })
+    return payload
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--model", default="out/model_v2.joblib")
+    ap.add_argument("--out", default="out/model_v2.json")
+    args = ap.parse_args()
+
+    payload = export_pipeline(joblib.load(args.model))
+    serialized = json.dumps(payload, ensure_ascii=False, allow_nan=False)
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
-    with out.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False)
+    out.write_text(serialized, encoding="utf-8")
 
     size_mb = out.stat().st_size / (1024 * 1024)
     print(f"wrote {out}  ({size_mb:.2f} MB)")
     print(f"  classes      : {payload['classes']}")
     print(f"  folds        : {len(payload['calibrated_folds'])}")
-    print(f"  feature dims : {offset}")
+    print(f"  feature dims : {payload['feature_layout']['numeric'][1]}")
 
 
 if __name__ == "__main__":

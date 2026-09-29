@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """Merge and deduplicate the commit corpus.
 
-Pass A: exact (repo, sha).
-Pass B: MD5 of normalized diff (strips volatile index/hunk/whitespace).
-Pass C: SimHash near-dup with 4x16-bit LSH banding (opt-in, --near-dup).
+Deduplicate by commit identity, normalized diff, and optional SimHash distance.
 
 First-seen wins, so list --input in priority order (curated first, external
 last) to keep the trusted copy on tie.
@@ -14,6 +12,7 @@ Usage:
                     --near-dup --hamming 3
 """
 import argparse
+import glob
 import hashlib
 import json
 import re
@@ -22,48 +21,52 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Iterable, List
 
-# Windows consoles default to a legacy code page such as cp950.
-try:
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
-except Exception:
-    pass
-
-
 def expand_inputs(inputs: List[str]) -> List[Path]:
     out: List[Path] = []
     for item in inputs:
         p = Path(item)
         if p.is_dir():
             out.extend(sorted(p.glob("*.jsonl")) + sorted(p.glob("*.json")))
-        elif p.exists():
+        elif p.is_file():
             out.append(p)
         else:
-            print(f"[warn] skipping missing: {item}", file=sys.stderr)
-    return out
+            matches = sorted(Path(match) for match in glob.glob(item) if Path(match).is_file())
+            if matches:
+                out.extend(matches)
+            else:
+                print(f"[warn] skipping missing: {item}", file=sys.stderr)
+    return list({p.resolve(): p for p in out}.values())
 
 
 def iter_rows(paths: Iterable[Path]):
     for p in paths:
-        with p.open("r", encoding="utf-8") as f:
-            # Try JSON-array first; fall back to JSONL.
-            head = f.read(1)
+        with p.open("r", encoding="utf-8-sig") as f:
+            head = next((char for char in iter(lambda: f.read(1), "") if not char.isspace()), "")
             f.seek(0)
-            if head == "[":
+            if head == "[" or p.suffix.lower() == ".json":
                 try:
-                    for obj in json.load(f):
-                        if isinstance(obj, dict):
-                            yield obj
-                    continue
-                except Exception:
+                    content = json.load(f)
+                except json.JSONDecodeError:
                     f.seek(0)
+                else:
+                    if isinstance(content, dict):
+                        content = content.get("data", [content])
+                    if isinstance(content, list):
+                        for obj in content:
+                            if isinstance(obj, dict):
+                                yield obj
+                    continue
             for i, ln in enumerate(f, 1):
                 ln = ln.strip()
                 if not ln:
                     continue
                 try:
-                    yield json.loads(ln)
-                except Exception as e:
+                    obj = json.loads(ln)
+                    if isinstance(obj, dict):
+                        yield obj
+                    else:
+                        print(f"[warn] {p.name}:{i} expected a JSON object", file=sys.stderr)
+                except json.JSONDecodeError as e:
                     print(f"[warn] {p.name}:{i} invalid JSON: {e}", file=sys.stderr)
 
 
@@ -104,31 +107,39 @@ def simhash64(text: str) -> int:
 
 
 def hamming(a: int, b: int) -> int:
-    return bin(a ^ b).count("1")
+    return (a ^ b).bit_count()
 
 
-def banded_near_dup(sigs: List[int], threshold: int, bands: int = 4):
-    """Return indices that are near-dups of an earlier index. Any shared
-    band makes two signatures candidates for the Hamming check."""
-    assert 64 % bands == 0
-    band_bits = 64 // bands
-    mask = (1 << band_bits) - 1
+def banded_near_dup(sigs: List[int], threshold: int, bands=None):
+    """Keep the first signature within the requested Hamming distance."""
+    if not 0 <= threshold <= 64:
+        raise ValueError("Hamming distance must be between 0 and 64")
+    if threshold == 64:
+        return set(range(1, len(sigs)))
+    bands = threshold + 1 if bands is None else bands
+    if not threshold < bands <= 64:
+        raise ValueError("Use more bands than the Hamming threshold, up to 64")
+    # More bands than differing bits guarantees at least one shared band.
+    slices = []
+    offset = 0
+    for b in range(bands):
+        width = 64 // bands + (b < 64 % bands)
+        slices.append((offset, (1 << width) - 1))
+        offset += width
     buckets = [defaultdict(list) for _ in range(bands)]
     drop = set()
     for idx, sig in enumerate(sigs):
         candidates = set()
-        for b in range(bands):
-            key = (sig >> (b * band_bits)) & mask
+        for b, (offset, mask) in enumerate(slices):
+            key = (sig >> offset) & mask
             candidates.update(buckets[b].get(key, ()))
         for c in candidates:
-            if c in drop:
-                continue
             if hamming(sig, sigs[c]) <= threshold:
                 drop.add(idx)
                 break
         if idx not in drop:
-            for b in range(bands):
-                key = (sig >> (b * band_bits)) & mask
+            for b, (offset, mask) in enumerate(slices):
+                key = (sig >> offset) & mask
                 buckets[b][key].append(idx)
     return drop
 
@@ -143,6 +154,8 @@ def main():
     ap.add_argument("--hamming", type=int, default=3,
                     help="Max Hamming distance for near-dup (default 3 / 64 bits)")
     args = ap.parse_args()
+    if not 0 <= args.hamming <= 64:
+        ap.error("--hamming must be between 0 and 64")
 
     out_path = Path(args.output)
     # A glob like datasets/*.jsonl also matches the previous output.
@@ -157,7 +170,7 @@ def main():
     seen_sha = set()
     seen_diff = set()
     kept = []
-    sigs = []  # parallel to kept, for SimHash
+    sigs = []
     before = Counter()
     dropped_sha = dropped_diff = 0
     total = 0
@@ -168,18 +181,15 @@ def main():
         if label:
             before[label] += 1
 
-        # Pass A: (repo, sha)
         sha = str(row.get("sha") or "").strip()
+        owner = str(row.get("owner") or "").strip()
         repo = str(row.get("repo") or "").strip()
-        key_a = f"{repo}|{sha}" if sha else None
+        key_a = (owner, repo, sha) if sha else None
         if key_a and key_a in seen_sha:
             dropped_sha += 1
             continue
-        if key_a:
-            seen_sha.add(key_a)
-
-        # Pass B: normalized diff MD5
-        norm = normalize_diff(row.get("diff_text") or "")
+        diff_text = row.get("diff_text")
+        norm = normalize_diff(diff_text) if isinstance(diff_text, str) else ""
         if not norm:
             dropped_diff += 1
             continue
@@ -188,6 +198,8 @@ def main():
             dropped_diff += 1
             continue
         seen_diff.add(key_b)
+        if key_a:
+            seen_sha.add(key_a)
 
         kept.append(row)
         if args.near_dup:

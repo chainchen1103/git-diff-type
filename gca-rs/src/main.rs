@@ -24,7 +24,7 @@ struct Cli {
     #[arg(long, default_value_t = 3, global = true)]
     topk: usize,
 
-    /// Print the suggestion but do not commit or push.
+    /// Print suggestions without changing staged files, committing, or pushing.
     #[arg(long, global = true)]
     dry_run: bool,
 
@@ -33,7 +33,7 @@ struct Cli {
     no_push: bool,
 
     /// Ask before pushing. Overrides `gca.push` for this run.
-    #[arg(long, global = true)]
+    #[arg(long, global = true, conflicts_with = "no_push")]
     confirm_push: bool,
 
     /// Push to this remote. Overrides `gca.remote` for this run.
@@ -70,21 +70,32 @@ enum ConfigCmd {
     Remote { name: Option<String> },
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum PushMode { Auto, Ask, Never }
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum PushMode {
+    Auto,
+    Ask,
+    Never,
+}
 
-fn resolve_push_mode(no_push: bool, confirm_push: bool) -> PushMode {
-    if no_push { return PushMode::Never; }
-    if confirm_push { return PushMode::Ask; }
-    match git::get_config(PUSH_CONFIG_KEY).as_deref() {
+fn resolve_push_mode(no_push: bool, confirm_push: bool) -> Result<PushMode> {
+    if no_push {
+        return Ok(PushMode::Never);
+    }
+    if confirm_push {
+        return Ok(PushMode::Ask);
+    }
+    let config = git::get_config(PUSH_CONFIG_KEY).map(|value| value.to_ascii_lowercase());
+    let mode = match config.as_deref() {
         Some("never") | Some("off") | Some("no") => PushMode::Never,
         Some("ask") | Some("confirm") => PushMode::Ask,
         Some("auto") | Some("yes") | None => PushMode::Auto,
         Some(other) => {
-            eprintln!("warning: unknown {PUSH_CONFIG_KEY} value {other:?}; falling back to auto");
-            PushMode::Auto
+            anyhow::bail!(
+                "invalid {PUSH_CONFIG_KEY} value {other:?}; expected auto, ask, or never"
+            );
         }
-    }
+    };
+    Ok(mode)
 }
 
 fn main() -> Result<()> {
@@ -99,12 +110,16 @@ fn main() -> Result<()> {
 
 fn handle_subcommand(cmd: &Cmd) -> Result<()> {
     match cmd {
-        Cmd::Config { what: ConfigCmd::Push { mode: None } } => {
+        Cmd::Config {
+            what: ConfigCmd::Push { mode: None },
+        } => {
             let cur = git::get_config(PUSH_CONFIG_KEY).unwrap_or_else(|| "auto".to_string());
             println!("{PUSH_CONFIG_KEY} = {cur}");
             Ok(())
         }
-        Cmd::Config { what: ConfigCmd::Push { mode: Some(m) } } => {
+        Cmd::Config {
+            what: ConfigCmd::Push { mode: Some(m) },
+        } => {
             let normalized = m.to_lowercase();
             match normalized.as_str() {
                 "auto" | "ask" | "never" => {
@@ -116,15 +131,17 @@ fn handle_subcommand(cmd: &Cmd) -> Result<()> {
                 _ => anyhow::bail!("invalid mode {m:?}; expected auto | ask | never"),
             }
         }
-        Cmd::Config { what: ConfigCmd::Remote { name: None } } => {
-            let cur = git::get_config(REMOTE_CONFIG_KEY)
-                .unwrap_or_else(|| "(default)".to_string());
+        Cmd::Config {
+            what: ConfigCmd::Remote { name: None },
+        } => {
+            let cur = git::get_config(REMOTE_CONFIG_KEY).unwrap_or_else(|| "default".to_string());
             println!("{REMOTE_CONFIG_KEY} = {cur}");
             Ok(())
         }
-        Cmd::Config { what: ConfigCmd::Remote { name: Some(n) } } => {
-            git::set_config_global(REMOTE_CONFIG_KEY, n)
-                .context("failed to update git config")?;
+        Cmd::Config {
+            what: ConfigCmd::Remote { name: Some(n) },
+        } => {
+            git::set_config_global(REMOTE_CONFIG_KEY, n).context("failed to update git config")?;
             println!("set {REMOTE_CONFIG_KEY} = {n}");
             Ok(())
         }
@@ -145,31 +162,45 @@ fn resolve_remote(flag: &Option<String>) -> Option<String> {
 }
 
 fn run_commit_flow(cli: &Cli) -> Result<()> {
-    if !cli.paths.is_empty() {
-        git::add_paths(&cli.paths).context("git add failed")?;
-    }
-
-    let mut diff_text = git::staged_diff(&cli.paths).context("failed to read staged diff")?;
-    if diff_text.is_empty() {
-        if cli.paths.is_empty() {
-            println!("no staged changes; running `git add -A`");
-            git::add_all()?;
-            diff_text = git::staged_diff(&cli.paths).context("failed to read staged diff")?;
-        }
-        if diff_text.is_empty() {
-            println!("nothing to commit");
-            return Ok(());
-        }
-    }
-
-    let (files, stats) = git::staged_summary(&cli.paths)?;
-
     static EMBEDDED_MODEL: &[u8] = include_bytes!("../../out/model_v2.json");
     let model = match &cli.model {
-        Some(p) => Model::load(p)
-            .with_context(|| format!("failed to load model from {}", p.display()))?,
+        Some(p) => {
+            Model::load(p).with_context(|| format!("failed to load model from {}", p.display()))?
+        }
         None => Model::from_bytes(EMBEDDED_MODEL).context("failed to parse embedded model")?,
     };
+    let push_mode = if cli.dry_run {
+        PushMode::Never
+    } else {
+        resolve_push_mode(cli.no_push, cli.confirm_push)?
+    };
+    let (diff_text, files, stats) = if cli.dry_run {
+        git::preview(&cli.paths).context("failed to preview changes")?
+    } else {
+        if !cli.paths.is_empty() {
+            git::add_paths(&cli.paths).context("git add failed")?;
+        }
+
+        let mut diff_text = git::staged_diff(&cli.paths).context("failed to read staged diff")?;
+        if diff_text.is_empty() {
+            if cli.paths.is_empty() {
+                println!("no staged changes; running `git add -A`");
+                git::add_all()?;
+                diff_text = git::staged_diff(&cli.paths).context("failed to read staged diff")?;
+            }
+            if diff_text.is_empty() {
+                println!("nothing to commit");
+                return Ok(());
+            }
+        }
+
+        let (files, stats) = git::staged_summary(&cli.paths)?;
+        (diff_text, files, stats)
+    };
+    if diff_text.is_empty() {
+        println!("nothing to commit");
+        return Ok(());
+    }
 
     let diff_truncated: String = diff_text.chars().take(20_000).collect();
     let numeric = [
@@ -179,11 +210,15 @@ fn run_commit_flow(cli: &Cli) -> Result<()> {
         stats.additions as f64 / (stats.deletions as f64 + 1.0),
     ];
     let feats = model.build_features(&diff_truncated, numeric);
-    let probs = model.predict_proba(&feats);
+    let probs = model
+        .predict_proba(&feats)
+        .context("model inference failed")?;
     let mut top = model.topk(&probs, cli.topk.max(1));
 
     // A heuristic hit is pre-selected even when the model ranks it below top-k.
-    let default_idx = match heuristics::classify(&files) {
+    let heuristic = heuristics::classify(&files)
+        .filter(|label| model.payload.classes.iter().any(|class| class == label));
+    let default_idx = match heuristic {
         None => 0,
         Some(hit) => {
             let pos = top.iter().position(|(l, _)| *l == hit);
@@ -201,8 +236,16 @@ fn run_commit_flow(cli: &Cli) -> Result<()> {
 
     let items: Vec<String> = top
         .iter()
-        .map(|(l, s)| format!("{:<9} ({:5.1}%)", l, s * 100.0))
+        .map(|(l, s)| format!("{:<9} {:5.1}%", l, s * 100.0))
         .collect();
+
+    if cli.dry_run {
+        println!("Suggested type: {}", top[default_idx].0);
+        for item in &items {
+            println!("{item}");
+        }
+        return Ok(());
+    }
 
     let chosen = Select::with_theme(&ColorfulTheme::default())
         .with_prompt("Commit type")
@@ -214,23 +257,22 @@ fn run_commit_flow(cli: &Cli) -> Result<()> {
     let description: String = Input::with_theme(&ColorfulTheme::default())
         .with_prompt(format!("{label}:"))
         .validate_with(|s: &String| -> std::result::Result<(), &str> {
-            if s.trim().is_empty() { Err("description cannot be empty") } else { Ok(()) }
+            if s.trim().is_empty() {
+                Err("description cannot be empty")
+            } else {
+                Ok(())
+            }
         })
         .interact_text()?;
 
     let message = format!("{}: {}", label, description.trim());
-
-    if cli.dry_run {
-        println!("\n(dry-run) git commit -m \"{message}\"");
-        return Ok(());
-    }
 
     git::commit(&message, &cli.paths).context("git commit failed")?;
 
     let remote = resolve_remote(&cli.remote);
     let remote_ref = remote.as_deref();
 
-    match resolve_push_mode(cli.no_push, cli.confirm_push) {
+    match push_mode {
         PushMode::Never => Ok(()),
         PushMode::Ask => {
             let prompt = match &remote {
@@ -241,7 +283,11 @@ fn run_commit_flow(cli: &Cli) -> Result<()> {
                 .with_prompt(prompt)
                 .default(true)
                 .interact()?;
-            if yes { git::push(remote_ref).context("git push failed") } else { Ok(()) }
+            if yes {
+                git::push(remote_ref).context("git push failed")
+            } else {
+                Ok(())
+            }
         }
         PushMode::Auto => git::push(remote_ref).context("git push failed"),
     }

@@ -10,6 +10,10 @@ path = "src/main.rs"
 [[bin]]
 name = "gca-installer"
 path = "src/bin/installer.rs"
+required-features = ["installer"]
+
+[features]
+installer = ["dep:winreg"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -18,7 +22,10 @@ regex = "1"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 dialoguer = "0.11"
-winreg = "0.55"
+tempfile = "3"
+
+[target.'cfg(windows)'.dependencies]
+winreg = { version = "0.55", optional = true }
 
 [profile.release]
 lto = true
