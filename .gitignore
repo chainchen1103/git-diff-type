@@ -12,3 +12,4 @@ __pycache__/
 *.spec
 gca-rs/target/
 gca-rs/tests/fixtures.json
+eval/work/

@@ -21,7 +21,7 @@ from sklearn.svm import LinearSVC
 
 from dedupe import banded_near_dup, expand_inputs, iter_rows, main as dedupe_main
 from import_external import count_diff_lines, normalize_commitbench, rebuild_diff_from_mods
-from miner import mine_repo, parse_stats, process_commit
+from miner import mine_repo, mine_repo_stream, parse_date, parse_stats, process_commit
 from export_model import export_pipeline
 from train_enhanced import (
     DiffSimilarityExtractor, FileExtensionExtractor, PathTokenExtractor,
@@ -172,6 +172,62 @@ class DiffTests(unittest.TestCase):
                 mine_repo(folder, out, limit=1, max_workers=2)
             self.assertEqual(list(iter_rows([out])), [{"sha": "older"}])
 
+
+    def test_streaming_miner_matches_per_commit_miner(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            env = dict(os.environ, GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=str(root / "empty-config"))
+            env.pop("GIT_INDEX_FILE", None)
+            def git(*args, date="2026-01-01T00:00:00Z", author="Tests <test@example.invalid>"):
+                name, email = author[:-1].split(" <")
+                run_env = dict(env, GIT_AUTHOR_NAME=name, GIT_AUTHOR_EMAIL=email, GIT_COMMITTER_NAME=name,
+                               GIT_COMMITTER_EMAIL=email, GIT_AUTHOR_DATE=date, GIT_COMMITTER_DATE=date)
+                subprocess.run(["git", "-c", "commit.gpgsign=false", *args], cwd=root, env=run_env, check=True, capture_output=True)
+            git("init", "--quiet")
+            (root / "src").mkdir()
+            (root / "src/a.py").write_text("x = 1\n", encoding="utf-8")
+            (root / "we ird.md").write_text("text\n", encoding="utf-8")
+            git("add", "-A")
+            git("commit", "--quiet", "-m", "feat(core): add parser", date="2026-01-01T00:00:00Z")
+            (root / "notes.txt").write_text("note\n", encoding="utf-8")
+            git("add", "-A")
+            git("commit", "--quiet", "-m", "update notes", date="2026-02-01T00:00:00Z")
+            git("mv", "src/a.py", "src/b.py")
+            (root / "src/b.py").write_text("x = 1\ny = 2\n", encoding="utf-8")
+            (root / "img.png").write_bytes(b"\x89PNG\x00\x01")
+            git("add", "-A")
+            git("commit", "--quiet", "-m", "fix: rename and add an image", date="2026-03-01T00:00:00Z",
+                author="dependabot[bot] <bot@example.invalid>")
+            (root / "big.txt").write_text("".join(f"line {i}\n" for i in range(100)), encoding="utf-8")
+            git("add", "-A")
+            git("commit", "--quiet", "-m", "chore!: add a large file", date="2026-04-01T00:00:00Z")
+            for key, value in (("diff.noprefix", "true"), ("diff.mnemonicPrefix", "true"), ("diff.context", "0")):
+                git("config", key, value)
+            with patch.dict(os.environ, env, clear=True), contextlib.redirect_stdout(io.StringIO()):
+                mine_repo(root, root / "threads.jsonl", max_workers=2, max_diff_chars=300)
+                mine_repo_stream(root, root / "stream.jsonl", max_diff_chars=300)
+                mine_repo_stream(root, root / "range.jsonl", since=parse_date("2026-02-01"), until=parse_date("2026-04-01"))
+            threads = {row["sha"]: row for row in iter_rows([root / "threads.jsonl"])}
+            stream = {row["sha"]: row for row in iter_rows([root / "stream.jsonl"])}
+            self.assertEqual(stream.keys(), threads.keys())
+            self.assertEqual(sorted(row["label"] for row in stream.values()), ["chore", "feat", "fix"])
+            for sha, row in threads.items():
+                self.assertEqual({key: stream[sha][key] for key in row}, row)
+            by_label = {row["label"]: row for row in stream.values()}
+            self.assertEqual(len(by_label["chore"]["diff_text"]), 300)
+            self.assertEqual(by_label["fix"]["top_exts"], ".png,.py")
+            self.assertEqual(by_label["fix"]["committed_at"], "2026-03-01T00:00:00Z")
+            self.assertEqual([row["is_bot"] for row in (by_label["feat"], by_label["fix"])], [False, True])
+            self.assertEqual([row["label"] for row in iter_rows([root / "range.jsonl"])], ["fix"])
+
+    def test_streaming_miner_handles_a_repository_without_commits(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            subprocess.run(["git", "init", "--quiet"], cwd=root, check=True)
+            with contextlib.redirect_stdout(io.StringIO()) as stdout:
+                mine_repo_stream(root, root / "out.jsonl")
+            self.assertIn("No commits found", stdout.getvalue())
+            self.assertFalse((root / "out.jsonl").exists())
 
 class ExportVerificationTests(unittest.TestCase):
     def test_tfidf_norms_and_capture_groups_match_sklearn(self):
