@@ -1,0 +1,49 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  rust:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: gca-rs
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - name: Format
+        if: runner.os == 'Linux'
+        run: cargo fmt --check
+      - name: Lint
+        run: cargo clippy --release --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --release
+      - name: Installer builds (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          cargo build --release --bin gca
+          cargo build --release --bin gca-installer --features installer
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Unit tests
+        run: python -m unittest discover -s tests -v
+      - name: Exported model matches the Python reference
+        run: python verify_export.py --json out/model_v2.json --check-fixtures gca-rs/tests/synthetic_fixtures.json
