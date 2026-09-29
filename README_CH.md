@@ -113,8 +113,9 @@ Esc 或 Ctrl-C 隨時取消，暫存區不受影響。`-a` 和指定路徑都先
     --model <FILE>    使用匯出的 JSON 模型，取代內建模型
 ```
 
-不需互動、可放進腳本：`gca -a -t fix -m "handle empty diff"`、`gca -y -m "update guide"`。
-沒有終端機時，gca 會要求提供 `--type`（或 `--yes`）與 `-m`，而不是卡住。
+不需互動、可放進腳本：`gca -a -t fix -m "handle empty diff"`（專案有用 scope 時再加上
+`--scope <scope>`，不要 scope 則用 `--scope ""`），或 `gca -y -m "update guide"` 直接採用建議的類型與 scope。
+沒有終端機時，gca 會列出還缺哪些參數，而不是卡住。
 
 結束代碼：`0` 已 commit（或 dry run 完成）、`1` 沒有可 commit 的內容／取消／git 失敗、
 `2` 參數錯誤、`130` Ctrl-C。

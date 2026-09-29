@@ -286,7 +286,25 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
     let ask_scope = cli.scope.is_none() && !cli.yes && hint.repo_uses_scopes;
     let ask_subject = cli.message.is_empty();
     if (ask_type || ask_scope || ask_subject) && !interactive() {
-        bail!("no terminal to ask on; pass --type (or --yes) and -m to commit without prompts");
+        let mut needed = Vec::new();
+        if ask_type {
+            needed.push("--type");
+        }
+        if ask_scope {
+            needed.push("--scope (\"\" for none)");
+        }
+        if ask_subject {
+            needed.push("-m");
+        }
+        let yes = if ask_type || ask_scope {
+            "; --yes takes the suggested type and scope"
+        } else {
+            ""
+        };
+        bail!(
+            "no terminal to ask on; pass {} to commit without prompts{yes}",
+            needed.join(", ")
+        );
     }
     if INTERRUPTED.load(Ordering::SeqCst) {
         return Ok(interrupted());

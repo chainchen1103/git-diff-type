@@ -317,6 +317,28 @@ fn scope_is_suggested_from_history() {
 }
 
 #[test]
+fn without_a_terminal_it_names_the_missing_scope() {
+    let repo = Repo::new();
+    for i in 0..5 {
+        repo.write("src/cli.rs", &format!("// {i}\n"));
+        repo.git(&["add", "-A"]);
+        repo.git(&["commit", "-q", "-m", &format!("fix(cli): bug {i}")]);
+    }
+    repo.write("src/cli.rs", "// next\n");
+    repo.git(&["add", "-A"]);
+
+    let out = repo.gca(&["-t", "fix", "-m", "tidy"]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = stderr(&out);
+    assert!(err.contains("--scope") && !err.contains("--type,"), "{err}");
+    assert_eq!(repo.commit_count(), 6);
+
+    let out = repo.gca(&["-t", "fix", "--scope", "", "-m", "tidy"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(repo.head_message(), "fix: tidy");
+}
+
+#[test]
 fn no_scope_when_the_project_does_not_use_them() {
     let repo = Repo::new();
     for i in 0..6 {

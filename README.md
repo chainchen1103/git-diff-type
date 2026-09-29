@@ -130,9 +130,10 @@ leaves the real index exactly as it was.
     --model <FILE>    use an exported JSON model instead of the built-in one
 ```
 
-Without prompts, for scripts: `gca -a -t fix -m "handle empty diff"` or
-`gca -y -m "update guide"`. Without a terminal, gca asks for `--type` (or
-`--yes`) and `-m` instead of hanging.
+Without prompts, for scripts: `gca -a -t fix -m "handle empty diff"`, adding
+`--scope <scope>` (or `--scope ""` for none) in a project that uses scopes, or
+`gca -y -m "update guide"` to take the suggested type and scope. Without a
+terminal, gca names the flags it still needs instead of hanging.
 
 Exit codes: `0` committed (or dry run done), `1` nothing to commit, cancelled
 or git failed, `2` bad arguments, `130` Ctrl-C.
