@@ -1,0 +1,1888 @@
+{
+  "test_unseen_recent": {
+    "humans": {
+      "commits": 10005,
+      "top1": 0.4201899050474763,
+      "top3": 0.751024487756122,
+      "baseline_most_common": {
+        "type": "fix",
+        "top1": 0.44127936031984005
+      },
+      "baseline_random_top3": 0.2727272727272727,
+      "types": {
+        "fix": 4415,
+        "feat": 1903,
+        "chore": 1308,
+        "docs": 880,
+        "test": 472,
+        "refactor": 380,
+        "perf": 255,
+        "ci": 253,
+        "build": 118,
+        "revert": 12,
+        "style": 9
+      },
+      "per_type": {
+        "build": {
+          "support": 118,
+          "precision": 0.11899313501144165,
+          "recall": 0.4406779661016949,
+          "top3_recall": 0.7542372881355932
+        },
+        "chore": {
+          "support": 1308,
+          "precision": 0.34401220442410374,
+          "recall": 0.34480122324159024,
+          "top3_recall": 0.7155963302752294
+        },
+        "ci": {
+          "support": 253,
+          "precision": 0.35355648535564854,
+          "recall": 0.6679841897233202,
+          "top3_recall": 0.9367588932806324
+        },
+        "docs": {
+          "support": 880,
+          "precision": 0.5714285714285714,
+          "recall": 0.7136363636363636,
+          "top3_recall": 0.8693181818181818
+        },
+        "feat": {
+          "support": 1903,
+          "precision": 0.41411895497498613,
+          "recall": 0.3914871255911718,
+          "top3_recall": 0.7572254335260116
+        },
+        "fix": {
+          "support": 4415,
+          "precision": 0.7221532091097308,
+          "recall": 0.39501698754246883,
+          "top3_recall": 0.7556058890147226
+        },
+        "perf": {
+          "support": 255,
+          "precision": 0.13406593406593406,
+          "recall": 0.23921568627450981,
+          "top3_recall": 0.4980392156862745
+        },
+        "refactor": {
+          "support": 380,
+          "precision": 0.08780487804878048,
+          "recall": 0.14210526315789473,
+          "top3_recall": 0.4473684210526316
+        },
+        "revert": {
+          "support": 12,
+          "precision": null,
+          "recall": 0.0,
+          "top3_recall": 0.0
+        },
+        "style": {
+          "support": 9,
+          "precision": 0.009708737864077669,
+          "recall": 0.2222222222222222,
+          "top3_recall": 0.5555555555555556
+        },
+        "test": {
+          "support": 472,
+          "precision": 0.2504201680672269,
+          "recall": 0.6313559322033898,
+          "top3_recall": 0.864406779661017
+        }
+      },
+      "per_repo": {
+        "apache_superset": {
+          "commits": 2428,
+          "top1": 0.4674629324546952,
+          "top3": 0.8430807248764415
+        },
+        "conventional-changelog_commitlint": {
+          "commits": 58,
+          "top1": 0.39655172413793105,
+          "top3": 0.6896551724137931
+        },
+        "electron_electron": {
+          "commits": 690,
+          "top1": 0.6130434782608696,
+          "top3": 0.8797101449275362
+        },
+        "hoppscotch_hoppscotch": {
+          "commits": 102,
+          "top1": 0.27450980392156865,
+          "top3": 0.7254901960784313
+        },
+        "medusajs_medusa": {
+          "commits": 882,
+          "top1": 0.5317460317460317,
+          "top3": 0.8027210884353742
+        },
+        "napi-rs_napi-rs": {
+          "commits": 122,
+          "top1": 0.5245901639344263,
+          "top3": 0.860655737704918
+        },
+        "nestjs_nest": {
+          "commits": 274,
+          "top1": 0.5,
+          "top3": 0.8722627737226277
+        },
+        "novuhq_novu": {
+          "commits": 1148,
+          "top1": 0.31881533101045295,
+          "top3": 0.6533101045296167
+        },
+        "quasarframework_quasar": {
+          "commits": 1762,
+          "top1": 0.30930760499432464,
+          "top3": 0.6384790011350738
+        },
+        "rolldown_rolldown": {
+          "commits": 858,
+          "top1": 0.3041958041958042,
+          "top3": 0.6328671328671329
+        },
+        "semantic-release_semantic-release": {
+          "commits": 25,
+          "top1": 0.52,
+          "top3": 0.64
+        },
+        "shadcn-ui_ui": {
+          "commits": 292,
+          "top1": 0.3150684931506849,
+          "top3": 0.6643835616438356
+        },
+        "typeorm_typeorm": {
+          "commits": 86,
+          "top1": 0.313953488372093,
+          "top3": 0.6627906976744186
+        },
+        "vitejs_vite": {
+          "commits": 442,
+          "top1": 0.5520361990950227,
+          "top3": 0.8054298642533937
+        },
+        "vitest-dev_vitest": {
+          "commits": 470,
+          "top1": 0.3851063829787234,
+          "top3": 0.7617021276595745
+        },
+        "vuejs_core": {
+          "commits": 120,
+          "top1": 0.8333333333333334,
+          "top3": 0.95
+        },
+        "vueuse_vueuse": {
+          "commits": 95,
+          "top1": 0.4105263157894737,
+          "top3": 0.8210526315789474
+        },
+        "zitadel_zitadel": {
+          "commits": 151,
+          "top1": 0.37748344370860926,
+          "top3": 0.6821192052980133
+        }
+      },
+      "macro_recall": 0.440697859719156
+    },
+    "bots": {
+      "commits": 2985,
+      "top1": 0.6083752093802345,
+      "top3": 0.8830820770519263,
+      "baseline_most_common": {
+        "type": "chore",
+        "top1": 0.816750418760469
+      },
+      "baseline_random_top3": 0.2727272727272727,
+      "types": {
+        "chore": 2438,
+        "fix": 329,
+        "build": 108,
+        "ci": 45,
+        "docs": 35,
+        "test": 23,
+        "feat": 4,
+        "refactor": 2,
+        "revert": 1
+      },
+      "per_type": {
+        "build": {
+          "support": 108,
+          "precision": 0.09523809523809523,
+          "recall": 0.3888888888888889,
+          "top3_recall": 0.7685185185185185
+        },
+        "chore": {
+          "support": 2438,
+          "precision": 0.9285714285714286,
+          "recall": 0.6185397867104184,
+          "top3_recall": 0.9031993437243643
+        },
+        "ci": {
+          "support": 45,
+          "precision": 0.14056224899598393,
+          "recall": 0.7777777777777778,
+          "top3_recall": 0.9777777777777777
+        },
+        "docs": {
+          "support": 35,
+          "precision": 0.208955223880597,
+          "recall": 0.8,
+          "top3_recall": 0.9428571428571428
+        },
+        "feat": {
+          "support": 4,
+          "precision": 0.03225806451612903,
+          "recall": 0.25,
+          "top3_recall": 0.5
+        },
+        "fix": {
+          "support": 329,
+          "precision": 0.4346793349168646,
+          "recall": 0.5562310030395137,
+          "top3_recall": 0.7598784194528876
+        },
+        "perf": {
+          "support": 0,
+          "precision": 0.0,
+          "recall": null,
+          "top3_recall": null
+        },
+        "refactor": {
+          "support": 2,
+          "precision": 0.041666666666666664,
+          "recall": 0.5,
+          "top3_recall": 1.0
+        },
+        "revert": {
+          "support": 1,
+          "precision": null,
+          "recall": 0.0,
+          "top3_recall": 0.0
+        },
+        "style": {
+          "support": 0,
+          "precision": 0.0,
+          "recall": null,
+          "top3_recall": null
+        },
+        "test": {
+          "support": 23,
+          "precision": 0.5,
+          "recall": 0.782608695652174,
+          "top3_recall": 0.8695652173913043
+        }
+      },
+      "per_repo": {
+        "apache_superset": {
+          "commits": 1252,
+          "top1": 0.6277955271565495,
+          "top3": 0.9488817891373802
+        },
+        "conventional-changelog_commitlint": {
+          "commits": 216,
+          "top1": 0.6342592592592593,
+          "top3": 0.8287037037037037
+        },
+        "electron_electron": {
+          "commits": 194,
+          "top1": 0.6649484536082474,
+          "top3": 0.9072164948453608
+        },
+        "medusajs_medusa": {
+          "commits": 74,
+          "top1": 0.0945945945945946,
+          "top3": 0.35135135135135137
+        },
+        "napi-rs_napi-rs": {
+          "commits": 134,
+          "top1": 0.47761194029850745,
+          "top3": 0.7686567164179104
+        },
+        "nestjs_nest": {
+          "commits": 439,
+          "top1": 0.8154897494305239,
+          "top3": 0.9977220956719818
+        },
+        "novuhq_novu": {
+          "commits": 151,
+          "top1": 0.23178807947019867,
+          "top3": 0.48344370860927155
+        },
+        "rolldown_rolldown": {
+          "commits": 180,
+          "top1": 0.31666666666666665,
+          "top3": 0.7777777777777778
+        },
+        "semantic-release_semantic-release": {
+          "commits": 109,
+          "top1": 0.8807339449541285,
+          "top3": 0.9357798165137615
+        },
+        "shadcn-ui_ui": {
+          "commits": 50,
+          "top1": 0.82,
+          "top3": 0.98
+        },
+        "typeorm_typeorm": {
+          "commits": 12,
+          "top1": 0.3333333333333333,
+          "top3": 1.0
+        },
+        "vitejs_vite": {
+          "commits": 61,
+          "top1": 0.29508196721311475,
+          "top3": 0.7540983606557377
+        },
+        "vitest-dev_vitest": {
+          "commits": 42,
+          "top1": 0.7619047619047619,
+          "top3": 0.8809523809523809
+        },
+        "vuejs_core": {
+          "commits": 61,
+          "top1": 0.7540983606557377,
+          "top3": 0.9508196721311475
+        },
+        "vueuse_vueuse": {
+          "commits": 2,
+          "top1": 0.5,
+          "top3": 0.5
+        },
+        "zitadel_zitadel": {
+          "commits": 8,
+          "top1": 0.625,
+          "top3": 1.0
+        }
+      },
+      "macro_recall": 0.6540076920114622
+    },
+    "all": {
+      "commits": 12990,
+      "top1": 0.4634334103156274,
+      "top3": 0.7813702848344881,
+      "baseline_most_common": {
+        "type": "fix",
+        "top1": 0.36520400307929174
+      },
+      "baseline_random_top3": 0.2727272727272727,
+      "types": {
+        "fix": 4744,
+        "chore": 3746,
+        "feat": 1907,
+        "docs": 915,
+        "test": 495,
+        "refactor": 382,
+        "ci": 298,
+        "perf": 255,
+        "build": 226,
+        "revert": 13,
+        "style": 9
+      },
+      "per_type": {
+        "build": {
+          "support": 226,
+          "precision": 0.1070615034168565,
+          "recall": 0.415929203539823,
+          "top3_recall": 0.7610619469026548
+        },
+        "chore": {
+          "support": 3746,
+          "precision": 0.6674616695059625,
+          "recall": 0.5229578216764549,
+          "top3_recall": 0.8376935397757608
+        },
+        "ci": {
+          "support": 298,
+          "precision": 0.28060522696011003,
+          "recall": 0.6845637583892618,
+          "top3_recall": 0.9429530201342282
+        },
+        "docs": {
+          "support": 915,
+          "precision": 0.5320356853203568,
+          "recall": 0.7169398907103826,
+          "top3_recall": 0.8721311475409836
+        },
+        "feat": {
+          "support": 1907,
+          "precision": 0.40765027322404374,
+          "recall": 0.39119035133717883,
+          "top3_recall": 0.7566858940744625
+        },
+        "fix": {
+          "support": 4744,
+          "precision": 0.6794781382228491,
+          "recall": 0.4061973018549747,
+          "top3_recall": 0.7559021922428331
+        },
+        "perf": {
+          "support": 255,
+          "precision": 0.13062098501070663,
+          "recall": 0.23921568627450981,
+          "top3_recall": 0.4980392156862745
+        },
+        "refactor": {
+          "support": 382,
+          "precision": 0.08607198748043818,
+          "recall": 0.14397905759162305,
+          "top3_recall": 0.450261780104712
+        },
+        "revert": {
+          "support": 13,
+          "precision": null,
+          "recall": 0.0,
+          "top3_recall": 0.0
+        },
+        "style": {
+          "support": 9,
+          "precision": 0.0091324200913242,
+          "recall": 0.2222222222222222,
+          "top3_recall": 0.5555555555555556
+        },
+        "test": {
+          "support": 495,
+          "precision": 0.25774877650897227,
+          "recall": 0.6383838383838384,
+          "top3_recall": 0.8646464646464647
+        }
+      },
+      "per_repo": {
+        "apache_superset": {
+          "commits": 3680,
+          "top1": 0.5220108695652174,
+          "top3": 0.8790760869565217
+        },
+        "conventional-changelog_commitlint": {
+          "commits": 274,
+          "top1": 0.583941605839416,
+          "top3": 0.7992700729927007
+        },
+        "electron_electron": {
+          "commits": 884,
+          "top1": 0.6244343891402715,
+          "top3": 0.8857466063348416
+        },
+        "hoppscotch_hoppscotch": {
+          "commits": 102,
+          "top1": 0.27450980392156865,
+          "top3": 0.7254901960784313
+        },
+        "medusajs_medusa": {
+          "commits": 956,
+          "top1": 0.497907949790795,
+          "top3": 0.7677824267782427
+        },
+        "napi-rs_napi-rs": {
+          "commits": 256,
+          "top1": 0.5,
+          "top3": 0.8125
+        },
+        "nestjs_nest": {
+          "commits": 713,
+          "top1": 0.6942496493688639,
+          "top3": 0.9495091164095372
+        },
+        "novuhq_novu": {
+          "commits": 1299,
+          "top1": 0.3086989992301771,
+          "top3": 0.6335642802155504
+        },
+        "quasarframework_quasar": {
+          "commits": 1762,
+          "top1": 0.30930760499432464,
+          "top3": 0.6384790011350738
+        },
+        "rolldown_rolldown": {
+          "commits": 1038,
+          "top1": 0.3063583815028902,
+          "top3": 0.6579961464354528
+        },
+        "semantic-release_semantic-release": {
+          "commits": 134,
+          "top1": 0.8134328358208955,
+          "top3": 0.8805970149253731
+        },
+        "shadcn-ui_ui": {
+          "commits": 342,
+          "top1": 0.3888888888888889,
+          "top3": 0.7105263157894737
+        },
+        "typeorm_typeorm": {
+          "commits": 98,
+          "top1": 0.3163265306122449,
+          "top3": 0.7040816326530612
+        },
+        "vitejs_vite": {
+          "commits": 503,
+          "top1": 0.5208747514910537,
+          "top3": 0.7992047713717694
+        },
+        "vitest-dev_vitest": {
+          "commits": 512,
+          "top1": 0.416015625,
+          "top3": 0.771484375
+        },
+        "vuejs_core": {
+          "commits": 181,
+          "top1": 0.8066298342541437,
+          "top3": 0.9502762430939227
+        },
+        "vueuse_vueuse": {
+          "commits": 97,
+          "top1": 0.41237113402061853,
+          "top3": 0.8144329896907216
+        },
+        "zitadel_zitadel": {
+          "commits": 159,
+          "top1": 0.389937106918239,
+          "top3": 0.6981132075471698
+        }
+      },
+      "macro_recall": 0.46215076775089403
+    }
+  },
+  "test_unseen_older": {
+    "humans": {
+      "commits": 91617,
+      "top1": 0.4162764552430226,
+      "top3": 0.7331172162371612,
+      "baseline_most_common": {
+        "type": "fix",
+        "top1": 0.3522708667605357
+      },
+      "baseline_random_top3": 0.2727272727272727,
+      "types": {
+        "fix": 32274,
+        "feat": 20529,
+        "chore": 17454,
+        "docs": 8984,
+        "refactor": 5306,
+        "test": 2775,
+        "build": 1514,
+        "ci": 1367,
+        "perf": 955,
+        "style": 344,
+        "revert": 115
+      },
+      "per_type": {
+        "build": {
+          "support": 1514,
+          "precision": 0.17407626951195415,
+          "recall": 0.5819022457067371,
+          "top3_recall": 0.8645970937912814
+        },
+        "chore": {
+          "support": 17454,
+          "precision": 0.4251465454784957,
+          "recall": 0.36982926549788014,
+          "top3_recall": 0.7297467629196746
+        },
+        "ci": {
+          "support": 1367,
+          "precision": 0.29515151515151516,
+          "recall": 0.7125091441111924,
+          "top3_recall": 0.8719824433065106
+        },
+        "docs": {
+          "support": 8984,
+          "precision": 0.643091537132988,
+          "recall": 0.8289180765805877,
+          "top3_recall": 0.9139581478183437
+        },
+        "feat": {
+          "support": 20529,
+          "precision": 0.5256700313261399,
+          "recall": 0.29426664718203516,
+          "top3_recall": 0.6637439719421306
+        },
+        "fix": {
+          "support": 32274,
+          "precision": 0.6170366446766504,
+          "recall": 0.39703786329553203,
+          "top3_recall": 0.7330978496622669
+        },
+        "perf": {
+          "support": 955,
+          "precision": 0.05648625429553265,
+          "recall": 0.2753926701570681,
+          "top3_recall": 0.6732984293193718
+        },
+        "refactor": {
+          "support": 5306,
+          "precision": 0.13452680067001674,
+          "recall": 0.24217866566151527,
+          "top3_recall": 0.5872597059932152
+        },
+        "revert": {
+          "support": 115,
+          "precision": 0.0,
+          "recall": 0.0,
+          "top3_recall": 0.06956521739130435
+        },
+        "style": {
+          "support": 344,
+          "precision": 0.022243713733075435,
+          "recall": 0.2005813953488372,
+          "top3_recall": 0.6017441860465116
+        },
+        "test": {
+          "support": 2775,
+          "precision": 0.2763462651997684,
+          "recall": 0.6879279279279279,
+          "top3_recall": 0.8854054054054054
+        }
+      },
+      "per_repo": {
+        "apache_superset": {
+          "commits": 11100,
+          "top1": 0.4207207207207207,
+          "top3": 0.7548648648648648
+        },
+        "conventional-changelog_commitlint": {
+          "commits": 700,
+          "top1": 0.39285714285714285,
+          "top3": 0.6671428571428571
+        },
+        "electron_electron": {
+          "commits": 8092,
+          "top1": 0.6995798319327731,
+          "top3": 0.939940682155215
+        },
+        "hoppscotch_hoppscotch": {
+          "commits": 3070,
+          "top1": 0.2485342019543974,
+          "top3": 0.6228013029315961
+        },
+        "medusajs_medusa": {
+          "commits": 7339,
+          "top1": 0.4760866603079439,
+          "top3": 0.74574192669301
+        },
+        "napi-rs_napi-rs": {
+          "commits": 1723,
+          "top1": 0.4428322692977365,
+          "top3": 0.7840975043528728
+        },
+        "nestjs_nest": {
+          "commits": 2364,
+          "top1": 0.5241116751269036,
+          "top3": 0.8824027072758037
+        },
+        "novuhq_novu": {
+          "commits": 11619,
+          "top1": 0.23711162750667011,
+          "top3": 0.5863671572424477
+        },
+        "quasarframework_quasar": {
+          "commits": 11123,
+          "top1": 0.2956936078396116,
+          "top3": 0.6337319068596602
+        },
+        "rolldown_rolldown": {
+          "commits": 5843,
+          "top1": 0.313366421358891,
+          "top3": 0.6020879685093274
+        },
+        "semantic-release_semantic-release": {
+          "commits": 747,
+          "top1": 0.7684069611780455,
+          "top3": 0.9303882195448461
+        },
+        "shadcn-ui_ui": {
+          "commits": 1294,
+          "top1": 0.3384853168469861,
+          "top3": 0.6035548686244204
+        },
+        "typeorm_typeorm": {
+          "commits": 1838,
+          "top1": 0.44450489662676823,
+          "top3": 0.7415669205658324
+        },
+        "vitejs_vite": {
+          "commits": 7357,
+          "top1": 0.46567894522223735,
+          "top3": 0.7944814462416746
+        },
+        "vitest-dev_vitest": {
+          "commits": 5034,
+          "top1": 0.42550655542312277,
+          "top3": 0.7749304727850616
+        },
+        "vuejs_core": {
+          "commits": 4894,
+          "top1": 0.6313853698406212,
+          "top3": 0.9213322435635471
+        },
+        "vueuse_vueuse": {
+          "commits": 3471,
+          "top1": 0.45779314318640163,
+          "top3": 0.7772976087582829
+        },
+        "zitadel_zitadel": {
+          "commits": 4009,
+          "top1": 0.32975804440009976,
+          "top3": 0.6784734347717636
+        }
+      },
+      "macro_recall": 0.4173221728608466
+    },
+    "bots": {
+      "commits": 16839,
+      "top1": 0.6234930815369084,
+      "top3": 0.9200665122631986,
+      "baseline_most_common": {
+        "type": "chore",
+        "top1": 0.6925589405546647
+      },
+      "baseline_random_top3": 0.2727272727272727,
+      "types": {
+        "chore": 11662,
+        "fix": 2470,
+        "build": 2409,
+        "ci": 217,
+        "docs": 39,
+        "style": 23,
+        "feat": 16,
+        "refactor": 3
+      },
+      "per_type": {
+        "build": {
+          "support": 2409,
+          "precision": 0.3737971872686899,
+          "recall": 0.6288916562889165,
+          "top3_recall": 0.8410128684101287
+        },
+        "chore": {
+          "support": 11662,
+          "precision": 0.8736045168741178,
+          "recall": 0.5837763676899331,
+          "top3_recall": 0.9395472474704167
+        },
+        "ci": {
+          "support": 217,
+          "precision": 0.31004366812227074,
+          "recall": 0.9815668202764977,
+          "top3_recall": 0.9953917050691244
+        },
+        "docs": {
+          "support": 39,
+          "precision": 0.05778894472361809,
+          "recall": 0.5897435897435898,
+          "top3_recall": 0.8461538461538461
+        },
+        "feat": {
+          "support": 16,
+          "precision": 0.0625,
+          "recall": 0.25,
+          "top3_recall": 0.75
+        },
+        "fix": {
+          "support": 2470,
+          "precision": 0.5423443634324173,
+          "recall": 0.7829959514170041,
+          "top3_recall": 0.9068825910931174
+        },
+        "perf": {
+          "support": 0,
+          "precision": 0.0,
+          "recall": null,
+          "top3_recall": null
+        },
+        "refactor": {
+          "support": 3,
+          "precision": 0.02531645569620253,
+          "recall": 0.6666666666666666,
+          "top3_recall": 1.0
+        },
+        "revert": {
+          "support": 0,
+          "precision": null,
+          "recall": null,
+          "top3_recall": null
+        },
+        "style": {
+          "support": 23,
+          "precision": 0.0,
+          "recall": 0.0,
+          "top3_recall": 0.2608695652173913
+        },
+        "test": {
+          "support": 0,
+          "precision": 0.0,
+          "recall": null,
+          "top3_recall": null
+        }
+      },
+      "per_repo": {
+        "apache_superset": {
+          "commits": 2257,
+          "top1": 0.49003101462117854,
+          "top3": 0.8156845369960124
+        },
+        "conventional-changelog_commitlint": {
+          "commits": 1740,
+          "top1": 0.10977011494252874,
+          "top3": 0.9172413793103448
+        },
+        "electron_electron": {
+          "commits": 757,
+          "top1": 0.797886393659181,
+          "top3": 0.964332892998679
+        },
+        "hoppscotch_hoppscotch": {
+          "commits": 153,
+          "top1": 0.5424836601307189,
+          "top3": 0.8169934640522876
+        },
+        "medusajs_medusa": {
+          "commits": 564,
+          "top1": 0.12588652482269502,
+          "top3": 0.5195035460992907
+        },
+        "napi-rs_napi-rs": {
+          "commits": 918,
+          "top1": 0.7200435729847494,
+          "top3": 0.8976034858387799
+        },
+        "nestjs_nest": {
+          "commits": 6263,
+          "top1": 0.7897173878333067,
+          "top3": 0.999041992655277
+        },
+        "novuhq_novu": {
+          "commits": 377,
+          "top1": 0.28116710875331563,
+          "top3": 0.6604774535809018
+        },
+        "quasarframework_quasar": {
+          "commits": 15,
+          "top1": 0.4,
+          "top3": 1.0
+        },
+        "rolldown_rolldown": {
+          "commits": 742,
+          "top1": 0.4474393530997305,
+          "top3": 0.8962264150943396
+        },
+        "semantic-release_semantic-release": {
+          "commits": 942,
+          "top1": 0.9225053078556263,
+          "top3": 0.9904458598726115
+        },
+        "shadcn-ui_ui": {
+          "commits": 113,
+          "top1": 0.8672566371681416,
+          "top3": 1.0
+        },
+        "typeorm_typeorm": {
+          "commits": 35,
+          "top1": 0.37142857142857144,
+          "top3": 0.8
+        },
+        "vitejs_vite": {
+          "commits": 419,
+          "top1": 0.4152744630071599,
+          "top3": 0.7589498806682577
+        },
+        "vitest-dev_vitest": {
+          "commits": 315,
+          "top1": 0.7523809523809524,
+          "top3": 0.9396825396825397
+        },
+        "vuejs_core": {
+          "commits": 1038,
+          "top1": 0.918111753371869,
+          "top3": 0.9951830443159922
+        },
+        "vueuse_vueuse": {
+          "commits": 53,
+          "top1": 0.6037735849056604,
+          "top3": 0.9622641509433962
+        },
+        "zitadel_zitadel": {
+          "commits": 138,
+          "top1": 0.12318840579710146,
+          "top3": 0.9130434782608695
+        }
+      },
+      "macro_recall": 0.5944957309026568
+    },
+    "all": {
+      "commits": 108456,
+      "top1": 0.4484491406653389,
+      "top3": 0.7621431732684222,
+      "baseline_most_common": {
+        "type": "fix",
+        "top1": 0.32035111012760936
+      },
+      "baseline_random_top3": 0.2727272727272727,
+      "types": {
+        "fix": 34744,
+        "chore": 29116,
+        "feat": 20545,
+        "docs": 9023,
+        "refactor": 5309,
+        "build": 3923,
+        "test": 2775,
+        "ci": 1584,
+        "perf": 955,
+        "style": 367,
+        "revert": 115
+      },
+      "per_type": {
+        "build": {
+          "support": 3923,
+          "precision": 0.2628922536756638,
+          "recall": 0.6107570736681112,
+          "top3_recall": 0.850114708131532
+        },
+        "chore": {
+          "support": 29116,
+          "precision": 0.5772545264623955,
+          "recall": 0.4555227366396483,
+          "top3_recall": 0.813779365297431
+        },
+        "ci": {
+          "support": 1584,
+          "precision": 0.29771758214196137,
+          "recall": 0.7493686868686869,
+          "top3_recall": 0.8888888888888888
+        },
+        "docs": {
+          "support": 9023,
+          "precision": 0.6236433461345801,
+          "recall": 0.8278842956887953,
+          "top3_recall": 0.9136650781336584
+        },
+        "feat": {
+          "support": 20545,
+          "precision": 0.523104880581516,
+          "recall": 0.29423217327816986,
+          "top3_recall": 0.6638111462642979
+        },
+        "fix": {
+          "support": 34744,
+          "precision": 0.6060904943903341,
+          "recall": 0.42447616854708725,
+          "top3_recall": 0.7454524522219664
+        },
+        "perf": {
+          "support": 955,
+          "precision": 0.05583864118895966,
+          "recall": 0.2753926701570681,
+          "top3_recall": 0.6732984293193718
+        },
+        "refactor": {
+          "support": 5309,
+          "precision": 0.13363098328314818,
+          "recall": 0.24241853456394802,
+          "top3_recall": 0.5874929365228857
+        },
+        "revert": {
+          "support": 115,
+          "precision": 0.0,
+          "recall": 0.0,
+          "top3_recall": 0.06956521739130435
+        },
+        "style": {
+          "support": 367,
+          "precision": 0.021732283464566928,
+          "recall": 0.1880108991825613,
+          "top3_recall": 0.5803814713896458
+        },
+        "test": {
+          "support": 2775,
+          "precision": 0.27349570200573065,
+          "recall": 0.6879279279279279,
+          "top3_recall": 0.8854054054054054
+        }
+      },
+      "per_repo": {
+        "apache_superset": {
+          "commits": 13357,
+          "top1": 0.43243243243243246,
+          "top3": 0.7651418731751142
+        },
+        "conventional-changelog_commitlint": {
+          "commits": 2440,
+          "top1": 0.19098360655737706,
+          "top3": 0.8454918032786886
+        },
+        "electron_electron": {
+          "commits": 8849,
+          "top1": 0.7079896033450107,
+          "top3": 0.9420273477229065
+        },
+        "hoppscotch_hoppscotch": {
+          "commits": 3223,
+          "top1": 0.26248836487744337,
+          "top3": 0.63201985727583
+        },
+        "medusajs_medusa": {
+          "commits": 7903,
+          "top1": 0.4510945210679489,
+          "top3": 0.7295963558142478
+        },
+        "napi-rs_napi-rs": {
+          "commits": 2641,
+          "top1": 0.5391897008708822,
+          "top3": 0.8235516849678152
+        },
+        "nestjs_nest": {
+          "commits": 8627,
+          "top1": 0.7169352034310884,
+          "top3": 0.9670800973687261
+        },
+        "novuhq_novu": {
+          "commits": 11996,
+          "top1": 0.23849616538846283,
+          "top3": 0.5886962320773591
+        },
+        "quasarframework_quasar": {
+          "commits": 11138,
+          "top1": 0.295834081522715,
+          "top3": 0.6342251750763153
+        },
+        "rolldown_rolldown": {
+          "commits": 6585,
+          "top1": 0.3284738041002278,
+          "top3": 0.6352315869400151
+        },
+        "semantic-release_semantic-release": {
+          "commits": 1689,
+          "top1": 0.8543516873889876,
+          "top3": 0.9638839550029603
+        },
+        "shadcn-ui_ui": {
+          "commits": 1407,
+          "top1": 0.38095238095238093,
+          "top3": 0.6353944562899787
+        },
+        "typeorm_typeorm": {
+          "commits": 1873,
+          "top1": 0.44313934863854776,
+          "top3": 0.7426588360918313
+        },
+        "vitejs_vite": {
+          "commits": 7776,
+          "top1": 0.46296296296296297,
+          "top3": 0.7925668724279835
+        },
+        "vitest-dev_vitest": {
+          "commits": 5349,
+          "top1": 0.44475602916432977,
+          "top3": 0.7846326416152551
+        },
+        "vuejs_core": {
+          "commits": 5932,
+          "top1": 0.6815576534052596,
+          "top3": 0.9342548887390425
+        },
+        "vueuse_vueuse": {
+          "commits": 3524,
+          "top1": 0.45998864926220207,
+          "top3": 0.7800794551645857
+        },
+        "zitadel_zitadel": {
+          "commits": 4147,
+          "top1": 0.322884012539185,
+          "top3": 0.686279238003376
+        }
+      },
+      "macro_recall": 0.4323628333201821
+    }
+  },
+  "test_seen_recent": {
+    "humans": {
+      "commits": 39591,
+      "top1": 0.3351014119370564,
+      "top3": 0.6516127402692531,
+      "baseline_most_common": {
+        "type": "fix",
+        "top1": 0.39190725164810186
+      },
+      "baseline_random_top3": 0.2727272727272727,
+      "types": {
+        "fix": 15516,
+        "feat": 8747,
+        "chore": 3985,
+        "docs": 3102,
+        "refactor": 2746,
+        "test": 2548,
+        "perf": 1156,
+        "ci": 944,
+        "build": 765,
+        "style": 62,
+        "revert": 20
+      },
+      "per_type": {
+        "build": {
+          "support": 765,
+          "precision": 0.21179361179361178,
+          "recall": 0.5633986928104575,
+          "top3_recall": 0.8705882352941177
+        },
+        "chore": {
+          "support": 3985,
+          "precision": 0.22674212946586486,
+          "recall": 0.16085319949811794,
+          "top3_recall": 0.5533249686323714
+        },
+        "ci": {
+          "support": 944,
+          "precision": 0.36650082918739635,
+          "recall": 0.7023305084745762,
+          "top3_recall": 0.8707627118644068
+        },
+        "docs": {
+          "support": 3102,
+          "precision": 0.5195139051180182,
+          "recall": 0.7166344294003868,
+          "top3_recall": 0.8710509348807222
+        },
+        "feat": {
+          "support": 8747,
+          "precision": 0.4326911124922312,
+          "recall": 0.39796501657711214,
+          "top3_recall": 0.7241339887961586
+        },
+        "fix": {
+          "support": 15516,
+          "precision": 0.5494634473507712,
+          "recall": 0.21120134055168857,
+          "top3_recall": 0.5749548852797113
+        },
+        "perf": {
+          "support": 1156,
+          "precision": 0.14285714285714285,
+          "recall": 0.2984429065743945,
+          "top3_recall": 0.5743944636678201
+        },
+        "refactor": {
+          "support": 2746,
+          "precision": 0.12475247524752475,
+          "recall": 0.18353969410050983,
+          "top3_recall": 0.48361252731245447
+        },
+        "revert": {
+          "support": 20,
+          "precision": 0.0,
+          "recall": 0.0,
+          "top3_recall": 0.05
+        },
+        "style": {
+          "support": 62,
+          "precision": 0.005806719203649938,
+          "recall": 0.22580645161290322,
+          "top3_recall": 0.5645161290322581
+        },
+        "test": {
+          "support": 2548,
+          "precision": 0.29295383547379383,
+          "recall": 0.6624803767660911,
+          "top3_recall": 0.8320251177394035
+        }
+      },
+      "per_repo": {
+        "TanStack_query": {
+          "commits": 712,
+          "top1": 0.7092696629213483,
+          "top3": 0.901685393258427
+        },
+        "angular_angular": {
+          "commits": 1471,
+          "top1": 0.6437797416723318,
+          "top3": 0.9259007477906186
+        },
+        "angular_angular-cli": {
+          "commits": 672,
+          "top1": 0.45982142857142855,
+          "top3": 0.8273809523809523
+        },
+        "angular_components": {
+          "commits": 484,
+          "top1": 0.4214876033057851,
+          "top3": 0.7458677685950413
+        },
+        "ant-design_ant-design": {
+          "commits": 699,
+          "top1": 0.3290414878397711,
+          "top3": 0.642346208869814
+        },
+        "aws_aws-cdk": {
+          "commits": 466,
+          "top1": 0.4957081545064378,
+          "top3": 0.8648068669527897
+        },
+        "biomejs_biome": {
+          "commits": 951,
+          "top1": 0.2576235541535226,
+          "top3": 0.555205047318612
+        },
+        "calcom_cal.com": {
+          "commits": 79,
+          "top1": 0.3037974683544304,
+          "top3": 0.620253164556962
+        },
+        "charmbracelet_bubbletea": {
+          "commits": 23,
+          "top1": 0.34782608695652173,
+          "top3": 0.782608695652174
+        },
+        "commitizen-tools_commitizen": {
+          "commits": 49,
+          "top1": 0.5918367346938775,
+          "top3": 0.7551020408163265
+        },
+        "cypress-io_cypress": {
+          "commits": 588,
+          "top1": 0.31802721088435376,
+          "top3": 0.6258503401360545
+        },
+        "denoland_deno": {
+          "commits": 1707,
+          "top1": 0.14645577035735208,
+          "top3": 0.4100761570005858
+        },
+        "element-plus_element-plus": {
+          "commits": 153,
+          "top1": 0.39215686274509803,
+          "top3": 0.8235294117647058
+        },
+        "excalidraw_excalidraw": {
+          "commits": 131,
+          "top1": 0.366412213740458,
+          "top3": 0.7709923664122137
+        },
+        "facebook_docusaurus": {
+          "commits": 176,
+          "top1": 0.35795454545454547,
+          "top3": 0.6988636363636364
+        },
+        "freeCodeCamp_freeCodeCamp": {
+          "commits": 1302,
+          "top1": 0.13978494623655913,
+          "top3": 0.5422427035330261
+        },
+        "getsentry_sentry": {
+          "commits": 6210,
+          "top1": 0.24830917874396136,
+          "top3": 0.5523349436392915
+        },
+        "getsentry_sentry-javascript": {
+          "commits": 1579,
+          "top1": 0.3901203293223559,
+          "top3": 0.7200759974667511
+        },
+        "goreleaser_goreleaser": {
+          "commits": 296,
+          "top1": 0.3918918918918919,
+          "top3": 0.5912162162162162
+        },
+        "immich-app_immich": {
+          "commits": 1040,
+          "top1": 0.2826923076923077,
+          "top3": 0.6682692307692307
+        },
+        "microsoft_playwright": {
+          "commits": 1047,
+          "top1": 0.4297994269340974,
+          "top3": 0.720152817574021
+        },
+        "n8n-io_n8n": {
+          "commits": 5358,
+          "top1": 0.34210526315789475,
+          "top3": 0.7120194102276969
+        },
+        "nrwl_nx": {
+          "commits": 1059,
+          "top1": 0.4202077431539188,
+          "top3": 0.7554296506137866
+        },
+        "nuxt_nuxt": {
+          "commits": 818,
+          "top1": 0.3899755501222494,
+          "top3": 0.7004889975550123
+        },
+        "open-telemetry_opentelemetry-js": {
+          "commits": 239,
+          "top1": 0.4309623430962343,
+          "top3": 0.698744769874477
+        },
+        "oxc-project_oxc": {
+          "commits": 3374,
+          "top1": 0.24066390041493776,
+          "top3": 0.5163011262596325
+        },
+        "payloadcms_payload": {
+          "commits": 755,
+          "top1": 0.2728476821192053,
+          "top3": 0.686092715231788
+        },
+        "pnpm_pnpm": {
+          "commits": 2956,
+          "top1": 0.2554127198917456,
+          "top3": 0.5456698240866035
+        },
+        "prisma_prisma": {
+          "commits": 2836,
+          "top1": 0.4580394922425952,
+          "top3": 0.7387165021156559
+        },
+        "puppeteer_puppeteer": {
+          "commits": 219,
+          "top1": 0.3698630136986301,
+          "top3": 0.6986301369863014
+        },
+        "python-semantic-release_python-semantic-release": {
+          "commits": 60,
+          "top1": 0.4666666666666667,
+          "top3": 0.7333333333333333
+        },
+        "renovatebot_renovate": {
+          "commits": 1129,
+          "top1": 0.3985828166519043,
+          "top3": 0.7192205491585474
+        },
+        "starship_starship": {
+          "commits": 48,
+          "top1": 0.4583333333333333,
+          "top3": 0.75
+        },
+        "swc-project_swc": {
+          "commits": 270,
+          "top1": 0.37407407407407406,
+          "top3": 0.774074074074074
+        },
+        "tauri-apps_tauri": {
+          "commits": 266,
+          "top1": 0.46616541353383456,
+          "top3": 0.849624060150376
+        },
+        "vuetifyjs_vuetify": {
+          "commits": 369,
+          "top1": 0.4037940379403794,
+          "top3": 0.7452574525745257
+        }
+      },
+      "macro_recall": 0.37478660148783977
+    },
+    "bots": {
+      "commits": 5380,
+      "top1": 0.3369888475836431,
+      "top3": 0.683271375464684,
+      "baseline_most_common": {
+        "type": "chore",
+        "top1": 0.5912639405204461
+      },
+      "baseline_random_top3": 0.2727272727272727,
+      "types": {
+        "chore": 3181,
+        "fix": 915,
+        "build": 440,
+        "feat": 347,
+        "ci": 206,
+        "docs": 113,
+        "test": 106,
+        "refactor": 50,
+        "perf": 21,
+        "revert": 1
+      },
+      "per_type": {
+        "build": {
+          "support": 440,
+          "precision": 0.11120064464141821,
+          "recall": 0.31363636363636366,
+          "top3_recall": 0.759090909090909
+        },
+        "chore": {
+          "support": 3181,
+          "precision": 0.7384708737864077,
+          "recall": 0.38258409305249924,
+          "top3_recall": 0.8003772398616787
+        },
+        "ci": {
+          "support": 206,
+          "precision": 0.10404624277456648,
+          "recall": 0.4368932038834951,
+          "top3_recall": 0.587378640776699
+        },
+        "docs": {
+          "support": 113,
+          "precision": 0.36363636363636365,
+          "recall": 0.9557522123893806,
+          "top3_recall": 1.0
+        },
+        "feat": {
+          "support": 347,
+          "precision": 0.13023255813953488,
+          "recall": 0.08069164265129683,
+          "top3_recall": 0.21902017291066284
+        },
+        "fix": {
+          "support": 915,
+          "precision": 0.31625835189309576,
+          "recall": 0.1551912568306011,
+          "top3_recall": 0.3814207650273224
+        },
+        "perf": {
+          "support": 21,
+          "precision": 0.11702127659574468,
+          "recall": 0.5238095238095238,
+          "top3_recall": 0.6666666666666666
+        },
+        "refactor": {
+          "support": 50,
+          "precision": 0.04216867469879518,
+          "recall": 0.14,
+          "top3_recall": 0.56
+        },
+        "revert": {
+          "support": 1,
+          "precision": 0.0,
+          "recall": 0.0,
+          "top3_recall": 0.0
+        },
+        "style": {
+          "support": 0,
+          "precision": 0.0,
+          "recall": null,
+          "top3_recall": null
+        },
+        "test": {
+          "support": 106,
+          "precision": 0.21686746987951808,
+          "recall": 0.6792452830188679,
+          "top3_recall": 0.8962264150943396
+        }
+      },
+      "per_repo": {
+        "TanStack_query": {
+          "commits": 45,
+          "top1": 0.0,
+          "top3": 0.0
+        },
+        "ant-design_ant-design": {
+          "commits": 152,
+          "top1": 0.4276315789473684,
+          "top3": 0.9276315789473685
+        },
+        "aws_aws-cdk": {
+          "commits": 88,
+          "top1": 0.14772727272727273,
+          "top3": 0.9204545454545454
+        },
+        "biomejs_biome": {
+          "commits": 147,
+          "top1": 0.2653061224489796,
+          "top3": 0.7619047619047619
+        },
+        "commitizen-tools_commitizen": {
+          "commits": 32,
+          "top1": 0.5625,
+          "top3": 0.625
+        },
+        "cypress-io_cypress": {
+          "commits": 173,
+          "top1": 0.2023121387283237,
+          "top3": 0.31213872832369943
+        },
+        "denoland_deno": {
+          "commits": 124,
+          "top1": 0.1774193548387097,
+          "top3": 0.4032258064516129
+        },
+        "element-plus_element-plus": {
+          "commits": 208,
+          "top1": 0.6826923076923077,
+          "top3": 0.8076923076923077
+        },
+        "excalidraw_excalidraw": {
+          "commits": 4,
+          "top1": 0.0,
+          "top3": 1.0
+        },
+        "facebook_docusaurus": {
+          "commits": 80,
+          "top1": 0.35,
+          "top3": 0.85
+        },
+        "freeCodeCamp_freeCodeCamp": {
+          "commits": 115,
+          "top1": 0.3130434782608696,
+          "top3": 0.9130434782608695
+        },
+        "getsentry_sentry": {
+          "commits": 430,
+          "top1": 0.22325581395348837,
+          "top3": 0.5279069767441861
+        },
+        "getsentry_sentry-javascript": {
+          "commits": 242,
+          "top1": 0.17355371900826447,
+          "top3": 0.640495867768595
+        },
+        "goreleaser_goreleaser": {
+          "commits": 124,
+          "top1": 0.23387096774193547,
+          "top3": 0.5403225806451613
+        },
+        "immich-app_immich": {
+          "commits": 201,
+          "top1": 0.24875621890547264,
+          "top3": 0.572139303482587
+        },
+        "microsoft_playwright": {
+          "commits": 164,
+          "top1": 0.3048780487804878,
+          "top3": 0.45121951219512196
+        },
+        "n8n-io_n8n": {
+          "commits": 517,
+          "top1": 0.24177949709864605,
+          "top3": 0.5686653771760155
+        },
+        "nrwl_nx": {
+          "commits": 48,
+          "top1": 0.4166666666666667,
+          "top3": 0.8125
+        },
+        "nuxt_nuxt": {
+          "commits": 133,
+          "top1": 0.631578947368421,
+          "top3": 0.9548872180451128
+        },
+        "open-telemetry_opentelemetry-js": {
+          "commits": 102,
+          "top1": 0.4411764705882353,
+          "top3": 0.8333333333333334
+        },
+        "oxc-project_oxc": {
+          "commits": 332,
+          "top1": 0.5481927710843374,
+          "top3": 0.891566265060241
+        },
+        "payloadcms_payload": {
+          "commits": 1,
+          "top1": 1.0,
+          "top3": 1.0
+        },
+        "pnpm_pnpm": {
+          "commits": 77,
+          "top1": 0.09090909090909091,
+          "top3": 0.922077922077922
+        },
+        "prisma_prisma": {
+          "commits": 2,
+          "top1": 1.0,
+          "top3": 1.0
+        },
+        "puppeteer_puppeteer": {
+          "commits": 160,
+          "top1": 0.69375,
+          "top3": 0.825
+        },
+        "python-semantic-release_python-semantic-release": {
+          "commits": 20,
+          "top1": 0.45,
+          "top3": 0.9
+        },
+        "renovatebot_renovate": {
+          "commits": 1262,
+          "top1": 0.2987321711568938,
+          "top3": 0.6568938193343898
+        },
+        "starship_starship": {
+          "commits": 153,
+          "top1": 0.45751633986928103,
+          "top3": 0.7450980392156863
+        },
+        "swc-project_swc": {
+          "commits": 204,
+          "top1": 0.46078431372549017,
+          "top3": 0.9558823529411765
+        },
+        "tauri-apps_tauri": {
+          "commits": 40,
+          "top1": 0.525,
+          "top3": 0.8
+        }
+      },
+      "macro_recall": 0.4075337310302254
+    },
+    "all": {
+      "commits": 44971,
+      "top1": 0.33532721086922684,
+      "top3": 0.6554001467612461,
+      "baseline_most_common": {
+        "type": "fix",
+        "top1": 0.3653687932222988
+      },
+      "baseline_random_top3": 0.2727272727272727,
+      "types": {
+        "fix": 16431,
+        "feat": 9094,
+        "chore": 7166,
+        "docs": 3215,
+        "refactor": 2796,
+        "test": 2654,
+        "build": 1205,
+        "perf": 1177,
+        "ci": 1150,
+        "style": 62,
+        "revert": 21
+      },
+      "per_type": {
+        "build": {
+          "support": 1205,
+          "precision": 0.17368742368742368,
+          "recall": 0.4721991701244813,
+          "top3_recall": 0.8298755186721992
+        },
+        "chore": {
+          "support": 7166,
+          "precision": 0.415195530726257,
+          "recall": 0.25927993301702484,
+          "top3_recall": 0.6629919062238347
+        },
+        "ci": {
+          "support": 1150,
+          "precision": 0.28160059835452506,
+          "recall": 0.6547826086956522,
+          "top3_recall": 0.82
+        },
+        "docs": {
+          "support": 3215,
+          "precision": 0.5093968531468531,
+          "recall": 0.7250388802488336,
+          "top3_recall": 0.8755832037325039
+        },
+        "feat": {
+          "support": 9094,
+          "precision": 0.424818401937046,
+          "recall": 0.3858588080052782,
+          "top3_recall": 0.7048603474818562
+        },
+        "fix": {
+          "support": 16431,
+          "precision": 0.5331358178699517,
+          "recall": 0.20808228348852778,
+          "top3_recall": 0.5641774694175644
+        },
+        "perf": {
+          "support": 1177,
+          "precision": 0.14188919888401755,
+          "recall": 0.30246389124893797,
+          "top3_recall": 0.5760407816482583
+        },
+        "refactor": {
+          "support": 2796,
+          "precision": 0.12149310508796957,
+          "recall": 0.18276108726752505,
+          "top3_recall": 0.48497854077253216
+        },
+        "revert": {
+          "support": 21,
+          "precision": 0.0,
+          "recall": 0.0,
+          "top3_recall": 0.047619047619047616
+        },
+        "style": {
+          "support": 62,
+          "precision": 0.005638340716874748,
+          "recall": 0.22580645161290322,
+          "top3_recall": 0.5645161290322581
+        },
+        "test": {
+          "support": 2654,
+          "precision": 0.2888086642599278,
+          "recall": 0.6631499623210249,
+          "top3_recall": 0.8345892991710625
+        }
+      },
+      "per_repo": {
+        "TanStack_query": {
+          "commits": 757,
+          "top1": 0.667107001321004,
+          "top3": 0.8480845442536328
+        },
+        "angular_angular": {
+          "commits": 1471,
+          "top1": 0.6437797416723318,
+          "top3": 0.9259007477906186
+        },
+        "angular_angular-cli": {
+          "commits": 672,
+          "top1": 0.45982142857142855,
+          "top3": 0.8273809523809523
+        },
+        "angular_components": {
+          "commits": 484,
+          "top1": 0.4214876033057851,
+          "top3": 0.7458677685950413
+        },
+        "ant-design_ant-design": {
+          "commits": 851,
+          "top1": 0.34665099882491185,
+          "top3": 0.6933019976498237
+        },
+        "aws_aws-cdk": {
+          "commits": 554,
+          "top1": 0.4404332129963899,
+          "top3": 0.8736462093862816
+        },
+        "biomejs_biome": {
+          "commits": 1098,
+          "top1": 0.2586520947176685,
+          "top3": 0.5828779599271403
+        },
+        "calcom_cal.com": {
+          "commits": 79,
+          "top1": 0.3037974683544304,
+          "top3": 0.620253164556962
+        },
+        "charmbracelet_bubbletea": {
+          "commits": 23,
+          "top1": 0.34782608695652173,
+          "top3": 0.782608695652174
+        },
+        "commitizen-tools_commitizen": {
+          "commits": 81,
+          "top1": 0.5802469135802469,
+          "top3": 0.7037037037037037
+        },
+        "cypress-io_cypress": {
+          "commits": 761,
+          "top1": 0.29172141918528255,
+          "top3": 0.5545335085413929
+        },
+        "denoland_deno": {
+          "commits": 1831,
+          "top1": 0.14855270344074276,
+          "top3": 0.4096122337520481
+        },
+        "element-plus_element-plus": {
+          "commits": 361,
+          "top1": 0.5595567867036011,
+          "top3": 0.814404432132964
+        },
+        "excalidraw_excalidraw": {
+          "commits": 135,
+          "top1": 0.35555555555555557,
+          "top3": 0.7777777777777778
+        },
+        "facebook_docusaurus": {
+          "commits": 256,
+          "top1": 0.35546875,
+          "top3": 0.74609375
+        },
+        "freeCodeCamp_freeCodeCamp": {
+          "commits": 1417,
+          "top1": 0.15384615384615385,
+          "top3": 0.5723359209597741
+        },
+        "getsentry_sentry": {
+          "commits": 6640,
+          "top1": 0.24668674698795182,
+          "top3": 0.5507530120481928
+        },
+        "getsentry_sentry-javascript": {
+          "commits": 1821,
+          "top1": 0.3613399231191653,
+          "top3": 0.7095002745744097
+        },
+        "goreleaser_goreleaser": {
+          "commits": 420,
+          "top1": 0.34523809523809523,
+          "top3": 0.5761904761904761
+        },
+        "immich-app_immich": {
+          "commits": 1241,
+          "top1": 0.2771958098307816,
+          "top3": 0.6526994359387591
+        },
+        "microsoft_playwright": {
+          "commits": 1211,
+          "top1": 0.41288191577208916,
+          "top3": 0.6837324525185797
+        },
+        "n8n-io_n8n": {
+          "commits": 5875,
+          "top1": 0.3332765957446808,
+          "top3": 0.699404255319149
+        },
+        "nrwl_nx": {
+          "commits": 1107,
+          "top1": 0.42005420054200543,
+          "top3": 0.7579042457091237
+        },
+        "nuxt_nuxt": {
+          "commits": 951,
+          "top1": 0.4237644584647739,
+          "top3": 0.7360672975814931
+        },
+        "open-telemetry_opentelemetry-js": {
+          "commits": 341,
+          "top1": 0.4340175953079179,
+          "top3": 0.7390029325513197
+        },
+        "oxc-project_oxc": {
+          "commits": 3706,
+          "top1": 0.26821370750134915,
+          "top3": 0.5499190501888829
+        },
+        "payloadcms_payload": {
+          "commits": 756,
+          "top1": 0.27380952380952384,
+          "top3": 0.6865079365079365
+        },
+        "pnpm_pnpm": {
+          "commits": 3033,
+          "top1": 0.2512363996043521,
+          "top3": 0.555225848994395
+        },
+        "prisma_prisma": {
+          "commits": 2838,
+          "top1": 0.4584214235377026,
+          "top3": 0.7389006342494715
+        },
+        "puppeteer_puppeteer": {
+          "commits": 379,
+          "top1": 0.5065963060686016,
+          "top3": 0.7519788918205804
+        },
+        "python-semantic-release_python-semantic-release": {
+          "commits": 80,
+          "top1": 0.4625,
+          "top3": 0.775
+        },
+        "renovatebot_renovate": {
+          "commits": 2391,
+          "top1": 0.3458803847762443,
+          "top3": 0.6863237139272271
+        },
+        "starship_starship": {
+          "commits": 201,
+          "top1": 0.4577114427860697,
+          "top3": 0.746268656716418
+        },
+        "swc-project_swc": {
+          "commits": 474,
+          "top1": 0.41139240506329117,
+          "top3": 0.8523206751054853
+        },
+        "tauri-apps_tauri": {
+          "commits": 306,
+          "top1": 0.4738562091503268,
+          "top3": 0.8431372549019608
+        },
+        "vuetifyjs_vuetify": {
+          "commits": 369,
+          "top1": 0.4037940379403794,
+          "top3": 0.7452574525745257
+        }
+      },
+      "macro_recall": 0.3708566432754717
+    }
+  }
+}

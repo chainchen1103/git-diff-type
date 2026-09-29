@@ -1,0 +1,85 @@
+{
+  "cutoff": "2026-04-20",
+  "train_repos": [
+    "angular_angular",
+    "angular_angular-cli",
+    "angular_components",
+    "nrwl_nx",
+    "prisma_prisma",
+    "aws_aws-cdk",
+    "n8n-io_n8n",
+    "renovatebot_renovate",
+    "cypress-io_cypress",
+    "microsoft_playwright",
+    "puppeteer_puppeteer",
+    "freeCodeCamp_freeCodeCamp",
+    "calcom_cal.com",
+    "immich-app_immich",
+    "facebook_docusaurus",
+    "ant-design_ant-design",
+    "vuetifyjs_vuetify",
+    "nuxt_nuxt",
+    "pnpm_pnpm",
+    "element-plus_element-plus",
+    "TanStack_query",
+    "excalidraw_excalidraw",
+    "payloadcms_payload",
+    "getsentry_sentry",
+    "getsentry_sentry-javascript",
+    "open-telemetry_opentelemetry-js",
+    "python-semantic-release_python-semantic-release",
+    "commitizen-tools_commitizen",
+    "denoland_deno",
+    "swc-project_swc",
+    "oxc-project_oxc",
+    "biomejs_biome",
+    "tauri-apps_tauri",
+    "starship_starship",
+    "goreleaser_goreleaser",
+    "charmbracelet_bubbletea"
+  ],
+  "test_repos": [
+    "vitejs_vite",
+    "vuejs_core",
+    "vitest-dev_vitest",
+    "conventional-changelog_commitlint",
+    "electron_electron",
+    "nestjs_nest",
+    "semantic-release_semantic-release",
+    "vueuse_vueuse",
+    "quasarframework_quasar",
+    "typeorm_typeorm",
+    "hoppscotch_hoppscotch",
+    "shadcn-ui_ui",
+    "rolldown_rolldown",
+    "napi-rs_napi-rs",
+    "apache_superset",
+    "zitadel_zitadel",
+    "medusajs_medusa",
+    "novuhq_novu"
+  ],
+  "missing_repos": [],
+  "sets": {
+    "train": {
+      "commits": 342347,
+      "humans": 342347
+    },
+    "test_unseen_recent": {
+      "commits": 12990,
+      "humans": 10005
+    },
+    "test_unseen_older": {
+      "commits": 108456,
+      "humans": 91617
+    },
+    "test_seen_recent": {
+      "commits": 44971,
+      "humans": 39591
+    }
+  },
+  "dropped": {
+    "bots_from_train": 40668,
+    "duplicates": 2684,
+    "overlap_with_train": 8
+  }
+}
