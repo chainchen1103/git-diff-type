@@ -8,6 +8,8 @@ random sample of dataset rows. The Rust port must match this code path.
 Usage:
     python verify_export.py --json out/model_v2.json --model out/model_v2.joblib \\
         --data datasets/_merged.jsonl --n 50
+    python verify_export.py --check-fixtures gca-rs/tests/synthetic_fixtures.json \\
+        gca-rs/tests/fixtures.json
 """
 import argparse
 import json
@@ -178,6 +180,29 @@ def load_samples(data_path, n, seed=0):
     return prepare_features(pd.DataFrame(rows))
 
 
+def check_fixtures(payload, fixtures_path, tol):
+    """The Rust parity test compares gca against these fixtures. Check that
+    they were built from this model, so a stale model or stale fixtures fail
+    loudly instead of the parity test passing against the wrong numbers."""
+    fx = json.loads(Path(fixtures_path).read_text(encoding="utf-8"))
+    if fx["classes"] != payload["classes"]:
+        print(f"class order mismatch: fixtures={fx['classes']} json={payload['classes']}")
+        return 1
+    worst = 0.0
+    for case in fx["cases"]:
+        files, adds, dels, ratio = case["numeric"]
+        row = {"diff_text": case["diff_text"], "files_changed": files,
+               "additions": adds, "deletions": dels, "add_del_ratio": ratio}
+        probs = forward_pass(build_feature_vector(row, payload), payload)
+        worst = max(worst, float(np.abs(probs - np.asarray(case["expected_probs"])).max()))
+    print(f"max abs diff across {len(fx['cases'])} fixture cases: {worst:.3e}")
+    if worst > tol:
+        print("FAIL: the fixtures were not produced by this model")
+        return 1
+    print("PASS: fixtures match this model")
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--json", default="out/model_v2.json")
@@ -185,6 +210,8 @@ def main():
     ap.add_argument("--data", default="datasets/_merged.jsonl")
     ap.add_argument("--n", type=int, default=50)
     ap.add_argument("--tol", type=float, default=1e-6)
+    ap.add_argument("--check-fixtures", metavar="FILE", nargs="+",
+                    help="instead of comparing with sklearn, check the Rust parity fixtures")
     args = ap.parse_args()
     if args.n <= 0:
         ap.error("--n must be positive")
@@ -192,6 +219,9 @@ def main():
         ap.error("--tol must be a finite non-negative number")
 
     payload = json.loads(Path(args.json).read_text(encoding="utf-8"))
+    if args.check_fixtures:
+        sys.exit(max(check_fixtures(payload, f, args.tol) for f in args.check_fixtures))
+
     sk_model = joblib.load(args.model)
     expected_payload = export_pipeline(sk_model)
     if any(payload.get(key) != value for key, value in expected_payload.items()):

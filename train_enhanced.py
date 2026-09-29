@@ -10,12 +10,17 @@ Usage:
         --cm_out out/confusion_matrix.png
 """
 import argparse
+import json
+import random
 import re
+import time
+from collections import Counter
 from pathlib import Path
 
 import joblib
 import numpy as np
 import pandas as pd
+import scipy.sparse as sp
 from dedupe import iter_rows
 
 from sklearn.base import BaseEstimator, TransformerMixin
@@ -131,7 +136,9 @@ def prepare_features(df, max_diff_len=20000):
     df['add_del_ratio'] = df['additions'] / (df['deletions'] + 1)
     return df
 
-def build_model():
+def build_model(C=1.0, class_weight="balanced", n_jobs=None):
+    """The training pipeline. The defaults reproduce the original model; the
+    released model was trained with C=0.1 (see eval/tune_c.py)."""
     preprocessor = ColumnTransformer(
         transformers=[
             ('diff_tfidf', TfidfVectorizer(max_features=10000, stop_words='english'), 'diff_text'),
@@ -153,8 +160,9 @@ def build_model():
         remainder='drop'
     )
 
-    base_svc = LinearSVC(class_weight='balanced', random_state=42, max_iter=5000)
-    clf = CalibratedClassifierCV(base_svc, method='sigmoid', cv=3)
+    weight = None if class_weight in (None, "none") else class_weight
+    base_svc = LinearSVC(C=C, class_weight=weight, random_state=42, max_iter=5000)
+    clf = CalibratedClassifierCV(base_svc, method='sigmoid', cv=3, n_jobs=n_jobs)
 
     return Pipeline([
         ('preprocessor', preprocessor),
@@ -162,17 +170,111 @@ def build_model():
     ])
 
 
+def _stream_rows(paths, include_bots):
+    for row in iter_rows(paths):
+        if row.get("is_bot") and not include_bots:
+            continue
+        if not isinstance(row.get("label"), str) or not str(row.get("diff_text") or "").strip():
+            continue
+        yield row
+
+
+def train_streaming(args):
+    """Train on corpora too large to hold as one DataFrame: fit the
+    vocabularies and scaler on a uniform sample, transform everything in
+    chunks, then fit the calibrated classifier on the sparse matrix. There
+    is no internal test split; score the model with eval/evaluate.py on the
+    held-out sets instead."""
+    # Built through the module name so the pickle refers to train_enhanced.X
+    # rather than __main__.X and loads from any script.
+    import train_enhanced as te
+
+    started = time.time()
+    log = lambda msg: print(f"[{time.time() - started:7.1f}s] {msg}", flush=True)  # noqa: E731
+    paths = []
+    for item in args.data:
+        p = Path(item)
+        paths.extend(sorted(p.glob("*.jsonl")) if p.is_dir() else [p])
+    rng = random.Random(args.seed)
+
+    labels, sample, repos = [], [], Counter()
+    for i, row in enumerate(_stream_rows(paths, args.include_bots)):
+        labels.append(row["label"])
+        repos[row.get("repo", "?")] += 1
+        if len(sample) < args.fit_sample:
+            sample.append(row)
+        elif (j := rng.randrange(i + 1)) < args.fit_sample:
+            sample[j] = row
+    if len(set(labels)) < 2:
+        raise SystemExit("training needs at least two labels")
+    log(f"{len(labels)} commits from {len(repos)} repositories")
+
+    model = te.build_model(C=args.C, class_weight=args.class_weight, n_jobs=args.jobs)
+    pre, clf = model.named_steps["preprocessor"], model.named_steps["clf"]
+    pre.fit(prepare_features(pd.DataFrame(sample), args.max_diff_len)[FEATURE_COLUMNS])
+    del sample
+    log("fitted vocabularies")
+
+    blocks, buf = [], []
+    for row in _stream_rows(paths, args.include_bots):
+        buf.append(row)
+        if len(buf) == args.chunk:
+            frame = prepare_features(pd.DataFrame(buf), args.max_diff_len)[FEATURE_COLUMNS]
+            blocks.append(sp.csr_matrix(pre.transform(frame)))
+            buf = []
+    if buf:
+        frame = prepare_features(pd.DataFrame(buf), args.max_diff_len)[FEATURE_COLUMNS]
+        blocks.append(sp.csr_matrix(pre.transform(frame)))
+    X = sp.vstack(blocks, format="csr")
+    del blocks
+    log(f"features: {X.shape[0]} x {X.shape[1]}")
+
+    clf.fit(X, np.asarray(labels))
+    log("fitted classifier")
+
+    out = Path(args.model)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    joblib.dump(model, out, compress=3)
+    (out.parent / "labels.txt").write_text("\n".join(sorted(clf.classes_)), encoding="utf-8")
+    report = {
+        "commits": len(labels),
+        "repositories": len(repos),
+        "labels": dict(Counter(labels).most_common()),
+        "C": args.C,
+        "class_weight": args.class_weight,
+        "fit_sample": args.fit_sample,
+        "include_bots": args.include_bots,
+    }
+    (out.parent / "train_report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    log(f"model saved to {out}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Train enhanced commit classifier")
-    parser.add_argument("--data", required=True, help="Path to JSONL dataset(s) or directory")
+    parser.add_argument("--data", required=True, nargs="+",
+                        help="JSONL dataset(s) or a directory (several only with --stream)")
     parser.add_argument("--model", default="out/model_v2.joblib", help="Output model path")
     parser.add_argument("--cm_out", default="out/confusion_matrix.png", help="Path to save confusion matrix image")
     parser.add_argument("--max_diff_len", type=int, default=20000, help="Truncate diff text")
+    parser.add_argument("--C", type=float, default=1.0, help="LinearSVC regularization")
+    parser.add_argument("--class-weight", choices=["balanced", "none"], default="balanced")
+    parser.add_argument("--jobs", type=int, default=None, help="calibration folds fitted in parallel")
+    stream = parser.add_argument_group("large corpora")
+    stream.add_argument("--stream", action="store_true",
+                        help="fit on a vocabulary sample and transform in chunks; no internal split")
+    stream.add_argument("--fit-sample", type=int, default=150000)
+    stream.add_argument("--chunk", type=int, default=20000)
+    stream.add_argument("--include-bots", action="store_true", help="keep commits marked is_bot")
+    stream.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
     if args.max_diff_len <= 0:
         parser.error("--max_diff_len must be positive")
+    if args.stream:
+        return train_streaming(args)
+    if len(args.data) != 1:
+        parser.error("several --data paths need --stream")
 
-    df = load_data(args.data)
+    df = load_data(args.data[0])
     if df.empty:
         parser.error("no data found")
     if 'label' not in df:
@@ -201,7 +303,7 @@ def main():
     if y_train.value_counts().min() < 3:
         parser.error("each label needs at least three training rows for calibration")
 
-    model = build_model()
+    model = build_model(C=args.C, class_weight=args.class_weight, n_jobs=args.jobs)
 
     print("training model...")
     model.fit(X_train, y_train)

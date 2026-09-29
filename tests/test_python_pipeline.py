@@ -5,6 +5,7 @@ import json
 import math
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -297,6 +298,20 @@ class ExportPipelineTests(unittest.TestCase):
         model.named_steps["clf"].calibrated_classifiers_[0].estimator.coef_ = np.zeros((1, 1))
         with self.assertRaisesRegex(ValueError, "dimensions"):
             export_pipeline(model)
+
+    def test_prior_correction_shifts_calibration_and_still_exports(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "eval"))
+        import tune_prior
+        model = copy.deepcopy(self.model)
+        before = model.predict_proba(self.samples[FEATURE_COLUMNS])
+        tune_prior.apply(model, {"docs": 6, "fix": 6}, 1.0)
+        np.testing.assert_allclose(model.predict_proba(self.samples[FEATURE_COLUMNS]), before)
+        tune_prior.apply(model, {"docs": 2, "fix": 8}, 1.0)
+        after = model.predict_proba(self.samples[FEATURE_COLUMNS])
+        self.assertTrue((after[:, 0] > before[:, 0]).all())
+        payload = export_pipeline(model)
+        actual = [forward_pass(build_feature_vector(row, payload), payload) for _, row in self.samples.iterrows()]
+        np.testing.assert_allclose(actual, after, atol=1e-12)
 
     def test_verification_rejects_stale_model_before_sampling(self):
         payload = export_pipeline(self.model)
