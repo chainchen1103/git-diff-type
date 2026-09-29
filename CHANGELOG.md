@@ -26,6 +26,15 @@ retrained and measured on commits from projects it never saw.
 
 ### Added
 
+- One-line install, like other developer tools:
+  `curl -fsSL https://raw.githubusercontent.com/chainchen1103/git-diff-type/main/install.sh | sh`
+  on macOS and Linux, and
+  `irm https://raw.githubusercontent.com/chainchen1103/git-diff-type/main/install.ps1 | iex`
+  in PowerShell on Windows. The scripts download the release binary for the
+  platform, check it against the release's `SHA256SUMS` and put it on PATH.
+  Running one again upgrades gca; `--uninstall` (`$env:GCA_UNINSTALL = 1` in
+  PowerShell) removes it and its PATH entry. CI runs both on Linux, macOS and
+  Windows, including Windows PowerShell 5.1, and again against each release.
 - Scope suggestions learned from the repository's history; gca asks for a
   scope only when the project uses them. `--scope` sets it directly.
 - `--breaking` (`!`), body paragraphs with repeated `-m`, `-e/--edit`,

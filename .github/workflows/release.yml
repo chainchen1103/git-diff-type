@@ -67,3 +67,32 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
+
+  install-check:
+    # The one-line installers, run against the release just published.
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      GCA_VERSION: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: install.sh
+        if: runner.os != 'Windows'
+        env:
+          GCA_INSTALL_DIR: ${{ runner.temp }}/bin
+        run: |
+          sh install.sh
+          test "$("$GCA_INSTALL_DIR/gca" --version)" = "gca ${GCA_VERSION#v}"
+      - name: install.ps1
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GCA_INSTALL_DIR: ${{ runner.temp }}\gca
+        run: |
+          Invoke-Expression (Get-Content -Raw install.ps1)
+          $version = & "$env:GCA_INSTALL_DIR\gca.exe" --version
+          if ($version -ne "gca $($env:GCA_VERSION.TrimStart('v'))") { throw "unexpected version: $version" }

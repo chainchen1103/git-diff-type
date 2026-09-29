@@ -4,7 +4,7 @@
 //   gca-installer --uninstall   remove it again
 //   gca-installer --yes         no questions and no "press Enter" at the end, for scripts
 //
-// Windows only. On macOS and Linux, install gca with cargo instead.
+// Windows only. On macOS and Linux, use install.sh (see the README).
 
 #[cfg(windows)]
 fn main() {
@@ -13,8 +13,8 @@ fn main() {
 
 #[cfg(not(windows))]
 fn main() {
-    eprintln!("gca-installer is Windows-only.");
-    eprintln!("On macOS or Linux: cargo install --git https://github.com/chainchen1103/git-diff-type gca-rs --bin gca");
+    eprintln!("gca-installer is Windows-only. On macOS or Linux, run:");
+    eprintln!("  curl -fsSL https://raw.githubusercontent.com/chainchen1103/git-diff-type/main/install.sh | sh");
     std::process::exit(1);
 }
 

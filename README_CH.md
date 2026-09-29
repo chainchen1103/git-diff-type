@@ -37,20 +37,37 @@ $ gca
 
 ## 安裝
 
-**Windows**：從 [Releases](https://github.com/chainchen1103/git-diff-type/releases)
-下載並執行 `gca-installer.exe`。它把 `gca.exe` 放到 `%LOCALAPPDATA%\gca` 並加入使用者
-PATH；找不到 git 時會詢問是否用 `winget` 安裝。安裝後請開新的終端機。移除：
-`gca-installer --uninstall`。
-
-**macOS / Linux**：從 Releases 下載對應平台的 `gca`，或用 Rust 1.80 以上編譯：
+**macOS / Linux**：
 
 ```
-cargo install --git https://github.com/chainchen1103/git-diff-type gca-rs --bin gca
+curl -fsSL https://raw.githubusercontent.com/chainchen1103/git-diff-type/main/install.sh | sh
 ```
 
-**從原始碼編譯**：`cd gca-rs && cargo build --release --bin gca` 會產生
-`target/release/gca`（Windows 為 `gca.exe`）。安裝程式會嵌入這個檔案，所以要第二步再編：
-`cargo build --release --bin gca-installer --features installer`。
+**Windows**（PowerShell）：
+
+```
+irm https://raw.githubusercontent.com/chainchen1103/git-diff-type/main/install.ps1 | iex
+```
+
+腳本會從最新的 [Release](https://github.com/chainchen1103/git-diff-type/releases)
+下載你的平台對應的 gca，用 Release 附的 `SHA256SUMS` 驗證，放到 `~/.local/bin`
+（Windows：`%LOCALAPPDATA%\gca`）並把該資料夾加入 PATH，其他東西都不會動。再執行一次就是升級。
+移除：`curl -fsSL .../install.sh | sh -s -- --uninstall`；PowerShell 則先設定
+`$env:GCA_UNINSTALL = 1` 再執行同一行。`GCA_VERSION=v0.2.0` 可指定版本，`GCA_INSTALL_DIR`
+指定資料夾，`GCA_NO_MODIFY_PATH=1` 則不修改 PATH。
+
+預先編譯的執行檔涵蓋 Windows x64（在 Windows on Arm 上也能執行）、macOS（Apple silicon 與 Intel）
+和 Linux x86_64。gca 需要 git。
+
+其他安裝方式：
+
+- **Windows 安裝程式**：Releases 裡的 `gca-installer.exe` 做的事和 PowerShell 腳本相同，
+  找不到 git 時還會詢問是否用 `winget` 安裝。`gca-installer --uninstall` 可移除。
+- **用 Rust 1.80 以上編譯**（任何平台）：
+  `cargo install --git https://github.com/chainchen1103/git-diff-type gca-rs --bin gca`
+- **從原始碼編譯**：`cd gca-rs && cargo build --release --bin gca` 會產生
+  `target/release/gca`（Windows 為 `gca.exe`）。安裝程式會嵌入這個檔案，所以要第二步再編：
+  `cargo build --release --bin gca-installer --features installer`。
 
 Shell 補全：`gca completions bash|zsh|fish|powershell`，例如 `gca completions zsh > ~/.zfunc/_gca`。
 

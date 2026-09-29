@@ -43,22 +43,42 @@ Supported types: `feat`, `fix`, `docs`, `style`, `refactor`, `perf`, `test`,
 
 ## Install
 
-**Windows**: download and run `gca-installer.exe` from
-[Releases](https://github.com/chainchen1103/git-diff-type/releases). It copies
-`gca.exe` to `%LOCALAPPDATA%\gca` and adds that directory to your user PATH; if
-git is missing it offers to install it with `winget`. Open a new terminal
-afterwards. To remove it: `gca-installer --uninstall`.
-
-**macOS / Linux**: download `gca` for your platform from Releases, or build it
-with Rust 1.80 or later:
+**macOS / Linux**:
 
 ```
-cargo install --git https://github.com/chainchen1103/git-diff-type gca-rs --bin gca
+curl -fsSL https://raw.githubusercontent.com/chainchen1103/git-diff-type/main/install.sh | sh
 ```
 
-**From a clone**: `cd gca-rs && cargo build --release --bin gca` writes
-`target/release/gca` (`gca.exe` on Windows). The installer embeds that file, so
-build it second: `cargo build --release --bin gca-installer --features installer`.
+**Windows** (PowerShell):
+
+```
+irm https://raw.githubusercontent.com/chainchen1103/git-diff-type/main/install.ps1 | iex
+```
+
+The script downloads gca for your platform from the latest
+[release](https://github.com/chainchen1103/git-diff-type/releases), checks it
+against the release's `SHA256SUMS`, puts it in `~/.local/bin` (Windows:
+`%LOCALAPPDATA%\gca`) and adds that folder to your PATH. Nothing else on your
+machine changes. Run it again to upgrade. To remove gca, run
+`curl -fsSL .../install.sh | sh -s -- --uninstall`, or in PowerShell set
+`$env:GCA_UNINSTALL = 1` before the same command. `GCA_VERSION=v0.2.0`
+installs a given release, `GCA_INSTALL_DIR` another folder, and
+`GCA_NO_MODIFY_PATH=1` leaves your PATH alone.
+
+Prebuilt binaries cover Windows x64 (which also runs on Windows on Arm),
+macOS on Apple silicon and Intel, and Linux x86_64. gca needs git.
+
+Other ways to install:
+
+- **Windows installer**: `gca-installer.exe` from Releases does the same as
+  the PowerShell script, and offers to install git with `winget` if it is
+  missing. `gca-installer --uninstall` removes it.
+- **With Rust 1.80 or later**, on any platform:
+  `cargo install --git https://github.com/chainchen1103/git-diff-type gca-rs --bin gca`
+- **From a clone**: `cd gca-rs && cargo build --release --bin gca` writes
+  `target/release/gca` (`gca.exe` on Windows). The installer embeds that
+  file, so build it second:
+  `cargo build --release --bin gca-installer --features installer`.
 
 Shell completion: `gca completions bash|zsh|fish|powershell`, for example
 `gca completions zsh > ~/.zfunc/_gca`.

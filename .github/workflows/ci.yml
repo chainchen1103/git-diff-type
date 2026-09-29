@@ -34,6 +34,34 @@ jobs:
           cargo build --release --bin gca
           cargo build --release --bin gca-installer --features installer
 
+  install-scripts:
+    # install.sh and install.ps1 against a locally built gca served as a release.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build gca
+        working-directory: gca-rs
+        run: cargo build --bin gca
+      - name: Lint
+        if: runner.os == 'Linux'
+        run: shellcheck -s sh install.sh .github/scripts/test-install.sh
+      - name: install.sh
+        if: runner.os != 'Windows'
+        run: sh .github/scripts/test-install.sh
+      - name: install.ps1 (PowerShell 7)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./.github/scripts/test-install.ps1
+      - name: install.ps1 (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./.github/scripts/test-install.ps1
+
   python:
     runs-on: ubuntu-latest
     steps:
