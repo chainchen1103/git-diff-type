@@ -299,8 +299,20 @@ builds the installer on Windows.
 
 ## Roadmap
 
-- Adapt locally to the types a user picks in their own repositories
+- Draft the subject line, still offline: templates for mechanical commits
+  (dependency bumps, renames, releases, commits that only add tests or docs),
+  and a small built-in model that completes the subject after the chosen type
+  and scope, pre-filled for you to accept or edit
+- Suggest the type from the subject too: words such as "speed up" or "rename"
+  state the intent a diff often hides, which should help `refactor` and `perf` most
+- Adapt locally to the types a user picks in their own repositories, starting
+  with each repository's own mix of types
 - Read the project's commitlint config (custom types, header length)
 - Better `refactor` / `perf` with features about whether behavior changed
+- A `prepare-commit-msg` hook, so editors and git GUIs get the suggestion in
+  their commit box too
+- Notice staged changes that mix unrelated work and suggest splitting them;
+  suggest `!` when a change looks breaking, such as a removed export or a
+  changed signature
 
 [Changelog](CHANGELOG.md)

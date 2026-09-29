@@ -255,8 +255,15 @@ CI 在每次 push 時執行這些檢查（Rust 部分在 Windows、macOS、Linux
 
 ## Roadmap
 
-- 依使用者在自己儲存庫的選擇做本地微調
+- 離線草擬摘要：機械性的 commit（升級套件、改名、發版、只新增測試或文件）用模板直接寫出；
+  其他的由內建小模型接在已選的類型與 scope 後面補完，預先填好，按 Enter 接受或直接修改
+- 也從摘要判斷類型：「speed up」「rename」這類字眼說出了 diff 常看不出的意圖，
+  預期對 `refactor`、`perf` 幫助最大
+- 依使用者在自己儲存庫的選擇做本地微調，先從用各儲存庫自己的類型分佈校正開始
 - 讀取專案的 commitlint 設定（自訂類型、header 長度）
 - 改善 `refactor` / `perf`：加入「行為是否改變」相關的特徵
+- 提供 `prepare-commit-msg` hook，讓編輯器與 git 圖形介面的 commit 視窗也能預填建議
+- 發現暫存內容混雜了不相關的變更時，建議拆成幾個 commit；看起來是破壞性變更
+  （例如刪除 export、改動函式簽名）時，建議加上 `!`
 
 [更新紀錄](CHANGELOG.md)
