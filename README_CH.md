@@ -49,6 +49,9 @@ curl -fsSL https://raw.githubusercontent.com/chainchen1103/git-diff-type/main/in
 irm https://raw.githubusercontent.com/chainchen1103/git-diff-type/main/install.ps1 | iex
 ```
 
+在命令提示字元（cmd）裡要交給 PowerShell 執行：
+`powershell -c "irm https://raw.githubusercontent.com/chainchen1103/git-diff-type/main/install.ps1 | iex"`
+
 腳本會從最新的 [Release](https://github.com/chainchen1103/git-diff-type/releases)
 下載你的平台對應的 gca，用 Release 附的 `SHA256SUMS` 驗證，放到 `~/.local/bin`
 （Windows：`%LOCALAPPDATA%\gca`）並把該資料夾加入 PATH，其他東西都不會動。再執行一次就是升級。

@@ -55,6 +55,9 @@ curl -fsSL https://raw.githubusercontent.com/chainchen1103/git-diff-type/main/in
 irm https://raw.githubusercontent.com/chainchen1103/git-diff-type/main/install.ps1 | iex
 ```
 
+In Command Prompt (cmd), run it through PowerShell:
+`powershell -c "irm https://raw.githubusercontent.com/chainchen1103/git-diff-type/main/install.ps1 | iex"`
+
 The script downloads gca for your platform from the latest
 [release](https://github.com/chainchen1103/git-diff-type/releases), checks it
 against the release's `SHA256SUMS`, puts it in `~/.local/bin` (Windows:

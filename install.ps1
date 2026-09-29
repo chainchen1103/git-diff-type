@@ -6,6 +6,11 @@
 #
 #   $env:GCA_UNINSTALL = 1; irm https://raw.githubusercontent.com/chainchen1103/git-diff-type/main/install.ps1 | iex
 #
+# In Command Prompt (cmd), hand either one to PowerShell:
+#
+#   powershell -c "irm https://raw.githubusercontent.com/chainchen1103/git-diff-type/main/install.ps1 | iex"
+#   powershell -c "$env:GCA_UNINSTALL = 1; irm https://raw.githubusercontent.com/chainchen1103/git-diff-type/main/install.ps1 | iex"
+#
 # Settings, as environment variables:
 #   GCA_VERSION = v0.2.0     install this release instead of the latest
 #   GCA_INSTALL_DIR = DIR    install into DIR instead of %LOCALAPPDATA%\gca
@@ -148,7 +153,7 @@ public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wP
         if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
             Write-Host 'note: gca runs git, which is not installed yet:  winget install --id Git.Git -e --source winget'
         }
-        Write-Host 'gca works in this window now, and in any new one; stage some changes and run gca (see gca --help)'
+        Write-Host 'gca is ready in new terminals, and already in this PowerShell session; stage some changes and run gca (see gca --help)'
     }
 
     function Uninstall-Gca([string]$Dir) {
