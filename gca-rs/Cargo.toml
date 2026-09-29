@@ -1,12 +1,19 @@
 [package]
 name = "gca-rs"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
+rust-version = "1.80"
+description = "Suggests a Conventional Commit type from your staged diff, then commits"
+repository = "https://github.com/chainchen1103/git-diff-type"
+readme = "../README.md"
 
 [[bin]]
 name = "gca"
 path = "src/main.rs"
 
+# Windows installer. It embeds target/release/gca.exe, so build gca first:
+#   cargo build --release --bin gca
+#   cargo build --release --bin gca-installer --features installer
 [[bin]]
 name = "gca-installer"
 path = "src/bin/installer.rs"
@@ -21,11 +28,16 @@ serde_json = "1"
 regex = "1"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
+console = "0.15"
+ctrlc = "3"
 dialoguer = "0.11"
-tempfile = "3"
 
 [target.'cfg(windows)'.dependencies]
 winreg = { version = "0.55", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
 
 [profile.release]
 lto = true

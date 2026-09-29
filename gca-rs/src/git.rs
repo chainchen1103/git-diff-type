@@ -1,6 +1,11 @@
-use anyhow::{anyhow, Context, Result};
+//! Everything gca asks of git. Reads use machine-readable output; commit and
+//! push inherit the terminal so hooks, editors and credential prompts work.
+
+use anyhow::{anyhow, bail, Context, Result};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+
+use crate::history::LogEntry;
 
 pub struct Stats {
     pub files_changed: u64,
@@ -8,25 +13,45 @@ pub struct Stats {
     pub deletions: u64,
 }
 
-fn run(args: &[&str]) -> Result<String> {
-    run_with_index(args, None)
+/// A staged file: git's status letter (A, M, D, R, ...) and its path.
+pub struct FileChange {
+    pub status: char,
+    pub path: String,
 }
 
-fn run_with_index(args: &[&str], index: Option<&Path>) -> Result<String> {
-    let mut command = Command::new("git");
-    command.args(args);
+/// Settings that change what `git diff` prints. The model was trained on
+/// git's defaults, so these are pinned whatever the user has configured.
+/// Keep in sync with DIFF_CONFIG in miner.py; staged_diff() matches its DIFF_FLAGS.
+const DIFF_CONFIG: [&str; 8] = [
+    "-c",
+    "diff.noprefix=false",
+    "-c",
+    "diff.mnemonicPrefix=false",
+    "-c",
+    "diff.relative=false",
+    "-c",
+    "core.quotePath=true",
+];
+
+fn git(index: Option<&Path>) -> Command {
+    let mut cmd = Command::new("git");
     if let Some(index) = index {
-        command.env("GIT_INDEX_FILE", index);
+        cmd.env("GIT_INDEX_FILE", index);
     }
-    let out = command
+    cmd
+}
+
+fn run(index: Option<&Path>, args: &[&str]) -> Result<String> {
+    let out = git(index)
+        .args(args)
         .output()
-        .map_err(|e| anyhow!("failed to run git: {e}"))?;
+        .map_err(|e| anyhow!("could not run git: {e}"))?;
     if !out.status.success() {
-        return Err(anyhow!(
-            "git {} failed: {}",
+        bail!(
+            "`git {}` failed: {}",
             args.join(" "),
-            String::from_utf8_lossy(&out.stderr)
-        ));
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
@@ -38,9 +63,9 @@ fn run_inherit(args: &[&str]) -> Result<()> {
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .status()
-        .map_err(|e| anyhow!("failed to run git: {e}"))?;
+        .map_err(|e| anyhow!("could not run git: {e}"))?;
     if !status.success() {
-        return Err(anyhow!("git {} exited with {}", args.join(" "), status));
+        bail!("git {} exited with {status}", args.first().unwrap_or(&""));
     }
     Ok(())
 }
@@ -53,76 +78,135 @@ fn with_paths<'a>(mut args: Vec<&'a str>, paths: &'a [String]) -> Vec<&'a str> {
     args
 }
 
-pub fn staged_diff(paths: &[String]) -> Result<String> {
-    diff_with_index(paths, None)
-}
-
-fn diff_with_index(paths: &[String], index: Option<&Path>) -> Result<String> {
-    let args = with_paths(
-        vec![
-            "diff",
-            "--cached",
-            "--no-color",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--no-relative",
-            "--src-prefix=a/",
-            "--dst-prefix=b/",
-            "--unified=3",
-            "--output-indicator-new=+",
-            "--output-indicator-old=-",
-            "--output-indicator-context= ",
-        ],
-        paths,
-    );
-    Ok(run_with_index(&args, index)?.trim().to_string())
-}
-
-/// Staged file names and line counts from a single `git diff --numstat -z`.
-pub fn staged_summary(paths: &[String]) -> Result<(Vec<String>, Stats)> {
-    summary_with_index(paths, None)
-}
-
-fn summary_with_index(paths: &[String], index: Option<&Path>) -> Result<(Vec<String>, Stats)> {
-    let args = with_paths(
-        vec![
-            "diff",
-            "--cached",
-            "--numstat",
-            "-z",
-            "--no-relative",
-            "--no-ext-diff",
-            "--no-textconv",
-        ],
-        paths,
-    );
-    Ok(parse_numstat_z(&run_with_index(&args, index)?))
-}
-
-pub fn preview(paths: &[String]) -> Result<(String, Vec<String>, Stats)> {
-    let index_path = PathBuf::from(run(&["rev-parse", "--git-path", "index"])?.trim());
-    let temp_dir = tempfile::tempdir().context("failed to create preview directory")?;
-    let preview_index = temp_dir.path().join("index");
-    if index_path.exists() {
-        std::fs::copy(&index_path, &preview_index).context("failed to copy Git index")?;
+pub fn ensure_work_tree() -> Result<()> {
+    match run(None, &["rev-parse", "--is-inside-work-tree"]) {
+        Ok(out) if out.trim() == "true" => Ok(()),
+        _ => bail!("not inside a git working tree"),
     }
-    let index = Some(preview_index.as_path());
-    if !paths.is_empty() {
-        run_with_index(&with_paths(vec!["add"], paths), index)?;
+}
+
+/// Absolute path of a file inside the git directory, such as `index`.
+fn git_path(name: &str) -> Result<PathBuf> {
+    let out = run(None, &["rev-parse", "--git-path", name])?;
+    let path = PathBuf::from(out.trim());
+    Ok(if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()?.join(path)
+    })
+}
+
+/// A merge, cherry-pick or revert that `git commit` should conclude, since
+/// git has already prepared its message.
+pub fn operation_in_progress() -> Result<Option<&'static str>> {
+    for (file, name) in [
+        ("MERGE_HEAD", "merge"),
+        ("CHERRY_PICK_HEAD", "cherry-pick"),
+        ("REVERT_HEAD", "revert"),
+    ] {
+        if git_path(file)?.exists() {
+            return Ok(Some(name));
+        }
     }
-    let mut diff = diff_with_index(paths, index)?;
-    if diff.is_empty() && paths.is_empty() {
-        run_with_index(&["add", "-A"], index)?;
-        diff = diff_with_index(paths, index)?;
+    Ok(None)
+}
+
+/// A throwaway copy of the index. Previewing `-a` or a list of paths stages
+/// into this copy, so the user's own index is never touched before the
+/// commit is confirmed. Removed when dropped.
+pub struct ScratchIndex {
+    path: PathBuf,
+}
+
+impl ScratchIndex {
+    pub fn new() -> Result<Self> {
+        // Honour a custom index the user pointed git at.
+        let real = match std::env::var_os("GIT_INDEX_FILE").filter(|v| !v.is_empty()) {
+            Some(custom) => std::env::current_dir()?.join(custom),
+            None => git_path("index")?,
+        };
+        let path = real.with_file_name(format!("gca-index-{}", std::process::id()));
+        if real.exists() {
+            std::fs::copy(&real, &path)
+                .with_context(|| format!("could not copy the index to {}", path.display()))?;
+        }
+        Ok(Self { path })
     }
-    let (files, stats) = summary_with_index(paths, index)?;
-    Ok((diff, files, stats))
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for ScratchIndex {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+/// `git add -u`: modified and deleted tracked files, as `git commit -a` would.
+pub fn add_tracked(index: &Path) -> Result<()> {
+    run(Some(index), &["add", "-u"]).map(|_| ())
+}
+
+pub fn add_paths(index: Option<&Path>, paths: &[String]) -> Result<()> {
+    run(index, &with_paths(vec!["add"], paths)).map(|_| ())
+}
+
+/// The staged diff, formatted the way the training data was.
+pub fn staged_diff(index: Option<&Path>, paths: &[String]) -> Result<String> {
+    let mut args = DIFF_CONFIG.to_vec();
+    args.extend([
+        "diff",
+        "--cached",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--unified=3",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        "--output-indicator-new=+",
+        "--output-indicator-old=-",
+        "--output-indicator-context= ",
+    ]);
+    Ok(run(index, &with_paths(args, paths))?.trim().to_string())
+}
+
+pub fn staged_files(index: Option<&Path>, paths: &[String]) -> Result<Vec<FileChange>> {
+    let mut args = DIFF_CONFIG.to_vec();
+    args.extend(["diff", "--cached", "--name-status", "-z"]);
+    Ok(parse_name_status_z(&run(index, &with_paths(args, paths))?))
+}
+
+pub fn staged_stats(index: Option<&Path>, paths: &[String]) -> Result<Stats> {
+    let mut args = DIFF_CONFIG.to_vec();
+    args.extend(["diff", "--cached", "--numstat", "-z"]);
+    Ok(parse_numstat_z(&run(index, &with_paths(args, paths))?))
+}
+
+// Records are `X\0path\0`, or `R100\0old\0new\0` for renames and copies.
+fn parse_name_status_z(out: &str) -> Vec<FileChange> {
+    let mut files = Vec::new();
+    let mut fields = out.split('\0');
+    while let Some(status) = fields.next() {
+        let Some(letter) = status.chars().next() else {
+            continue;
+        };
+        let mut path = fields.next().unwrap_or_default();
+        if letter == 'R' || letter == 'C' {
+            path = fields.next().unwrap_or_default();
+        }
+        files.push(FileChange {
+            status: letter,
+            path: path.to_string(),
+        });
+    }
+    files
 }
 
 // Records are `adds\tdels\tpath\0`, or `adds\tdels\t\0old\0new\0` for a
 // rename. Binary files report `-` for both counts.
-fn parse_numstat_z(out: &str) -> (Vec<String>, Stats) {
-    let mut files = Vec::new();
+fn parse_numstat_z(out: &str) -> Stats {
     let mut stats = Stats {
         files_changed: 0,
         additions: 0,
@@ -135,17 +219,15 @@ fn parse_numstat_z(out: &str) -> (Vec<String>, Stats) {
         else {
             continue;
         };
-        let path = if path.is_empty() {
+        if path.is_empty() {
+            // Rename or copy: the old and new paths follow as two fields.
             let (Some(old), Some(new)) = (fields.next(), fields.next()) else {
                 break;
             };
             if old.is_empty() || new.is_empty() {
                 continue;
             }
-            new
-        } else {
-            path
-        };
+        }
         stats.files_changed += 1;
         stats.additions = stats
             .additions
@@ -153,36 +235,158 @@ fn parse_numstat_z(out: &str) -> (Vec<String>, Stats) {
         stats.deletions = stats
             .deletions
             .saturating_add(dels.parse::<u64>().unwrap_or(0));
-        files.push(path.to_string());
     }
-    (files, stats)
+    stats
 }
 
-pub fn add_all() -> Result<()> {
-    run_inherit(&["add", "-A"])
+/// `git status --short`, for explaining why there is nothing to commit.
+/// `--no-optional-locks` keeps it from rewriting the index.
+pub fn status_short() -> Result<String> {
+    run(
+        None,
+        &[
+            "--no-optional-locks",
+            "-c",
+            "color.status=never",
+            "status",
+            "--short",
+        ],
+    )
 }
 
-pub fn add_paths(paths: &[String]) -> Result<()> {
-    run_inherit(&with_paths(vec!["add"], paths))
+/// Subjects and changed files of the most recent non-merge commits. Empty
+/// before the first commit.
+pub fn recent_log(depth: usize) -> Vec<LogEntry> {
+    let n = depth.to_string();
+    let args = [
+        "-c",
+        "core.quotePath=false",
+        "-c",
+        "diff.relative=false",
+        "log",
+        "--no-merges",
+        "-n",
+        &n,
+        "--format=%x1e%an <%ae>%x1f%s",
+        "--name-only",
+    ];
+    run(None, &args)
+        .map(|out| parse_log(&out))
+        .unwrap_or_default()
 }
 
-pub fn add_dry_run(paths: &[String]) -> Result<String> {
-    if paths.is_empty() {
-        run(&["add", "--dry-run", "-A"])
-    } else {
-        run(&with_paths(vec!["add", "--dry-run"], paths))
+fn parse_log(out: &str) -> Vec<LogEntry> {
+    out.split('\x1e')
+        .filter_map(|record| {
+            let mut lines = record.lines();
+            let (author, subject) = lines.next()?.split_once('\x1f')?;
+            let subject = subject.trim();
+            if subject.is_empty() {
+                return None;
+            }
+            let files = lines
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(String::from)
+                .collect();
+            Some(LogEntry {
+                author: author.to_string(),
+                subject: subject.to_string(),
+                files,
+            })
+        })
+        .collect()
+}
+
+pub struct CommitRequest<'a> {
+    pub header: &'a str,
+    pub body: &'a [String],
+    /// `git commit -a`
+    pub all: bool,
+    /// Commit only these paths (`git commit -- <paths>`).
+    pub paths: &'a [String],
+    pub edit: bool,
+    pub no_verify: bool,
+    pub signoff: bool,
+}
+
+/// Runs `git commit` with the terminal attached, so hooks print their output
+/// and `--edit` can open the editor. Each body paragraph is another `-m`.
+pub fn commit(req: &CommitRequest) -> Result<()> {
+    let mut args = vec!["commit", "-m", req.header];
+    for paragraph in req.body {
+        args.extend(["-m", paragraph.as_str()]);
+    }
+    if req.all {
+        args.push("-a");
+    }
+    if req.edit {
+        args.push("--edit");
+    }
+    if req.no_verify {
+        args.push("--no-verify");
+    }
+    if req.signoff {
+        args.push("--signoff");
+    }
+    run_inherit(&with_paths(args, req.paths))
+}
+
+fn current_branch() -> Option<String> {
+    run(None, &["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn remotes() -> Vec<String> {
+    run(None, &["remote"])
+        .map(|out| {
+            out.lines()
+                .map(|l| l.trim().to_string())
+                .filter(|l| !l.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Where a branch without an upstream should go: `remote.pushDefault`, then
+/// `origin`, then the only remote there is.
+fn default_remote() -> Result<String> {
+    if let Some(r) = get_config("remote.pushDefault") {
+        return Ok(r);
+    }
+    let all = remotes();
+    if all.iter().any(|r| r == "origin") {
+        return Ok("origin".into());
+    }
+    match all.as_slice() {
+        [only] => Ok(only.clone()),
+        [] => bail!("this repository has no remote to push to"),
+        _ => bail!("several remotes and no default; choose one with --remote or `gca config remote <name>`"),
     }
 }
 
-/// With paths, only those paths are committed and other staged changes stay staged.
-pub fn commit(message: &str, paths: &[String]) -> Result<()> {
-    run_inherit(&with_paths(vec!["commit", "-m", message], paths))
-}
-
+/// Pushes the current branch. A branch without an upstream gets one
+/// (`git push -u <remote> HEAD`); pushing to a remote other than the upstream
+/// leaves the upstream alone.
 pub fn push(remote: Option<&str>) -> Result<()> {
-    match remote {
-        Some(r) => run_inherit(&["push", "--", r]),
-        None => run_inherit(&["push"]),
+    let Some(branch) = current_branch() else {
+        bail!("HEAD is detached; push it yourself with `git push <remote> HEAD:<branch>`");
+    };
+    let upstream = get_config(&format!("branch.{branch}.remote"))
+        .filter(|_| get_config(&format!("branch.{branch}.merge")).is_some());
+    match (remote, upstream) {
+        (None, Some(_)) => run_inherit(&["push"]),
+        (Some(r), Some(up)) if r == up => run_inherit(&["push", r]),
+        (Some(r), Some(_)) => run_inherit(&["push", r, "HEAD"]),
+        (r, None) => {
+            let r = match r {
+                Some(r) => r.to_string(),
+                None => default_remote()?,
+            };
+            run_inherit(&["push", "--set-upstream", &r, "HEAD"])
+        }
     }
 }
 
@@ -202,19 +406,19 @@ pub fn get_config(key: &str) -> Option<String> {
     }
 }
 
-pub fn set_config_global(key: &str, value: &str) -> Result<()> {
-    run_inherit(&["config", "--global", key, value])
+pub fn set_config(key: &str, value: &str, local: bool) -> Result<()> {
+    let scope = if local { "--local" } else { "--global" };
+    run(None, &["config", scope, key, value]).map(|_| ())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::parse_numstat_z;
+    use super::*;
 
     #[test]
     fn numstat_z_plain_binary_and_rename() {
         let out = "3\t1\tsrc/a.rs\0-\t-\tlogo.png\x000\t2\t\0old/b.rs\0new/b.rs\0";
-        let (files, stats) = parse_numstat_z(out);
-        assert_eq!(files, ["src/a.rs", "logo.png", "new/b.rs"]);
+        let stats = parse_numstat_z(out);
         assert_eq!(stats.files_changed, 3);
         assert_eq!(stats.additions, 3);
         assert_eq!(stats.deletions, 3);
@@ -222,29 +426,34 @@ mod tests {
 
     #[test]
     fn numstat_z_empty() {
-        let (files, stats) = parse_numstat_z("");
-        assert!(files.is_empty());
-        assert_eq!(stats.files_changed, 0);
+        assert_eq!(parse_numstat_z("").files_changed, 0);
     }
 
     #[test]
-    fn numstat_z_preserves_tabs_and_newlines_in_paths() {
-        let (files, stats) = parse_numstat_z("1\t2\tsrc/tab\tline\n.rs\0");
-        assert_eq!(files, ["src/tab\tline\n.rs"]);
-        assert_eq!(stats.additions, 1);
-        assert_eq!(stats.deletions, 2);
+    fn name_status_z_with_rename() {
+        let out = "M\0src/a.rs\0R087\0old/b.rs\0new/b.rs\0A\0c.txt\0D\0gone.md\0";
+        let files = parse_name_status_z(out);
+        let got: Vec<(char, &str)> = files.iter().map(|f| (f.status, f.path.as_str())).collect();
+        assert_eq!(
+            got,
+            [
+                ('M', "src/a.rs"),
+                ('R', "new/b.rs"),
+                ('A', "c.txt"),
+                ('D', "gone.md")
+            ]
+        );
     }
 
     #[test]
-    fn numstat_z_ignores_incomplete_rename() {
-        let (files, stats) = parse_numstat_z("1\t2\t\0old.rs\0");
-        assert!(files.is_empty());
-        assert_eq!(stats.files_changed, 0);
-    }
-
-    #[test]
-    fn numstat_z_large_totals() {
-        let (_, stats) = parse_numstat_z("4294967295\t0\ta\x001\t0\tb\0");
-        assert_eq!(stats.additions, 4294967296);
+    fn log_records() {
+        let out = "\x1eAda <a@x>\x1ffeat(cli): add -a\n\nsrc/main.rs\nREADME.md\n\x1eBo <b@x>\x1fdocs: typo\n\nREADME.md\n\x1eCy <c@x>\x1fempty commit\n";
+        let log = parse_log(out);
+        assert_eq!(log.len(), 3);
+        assert_eq!(log[0].author, "Ada <a@x>");
+        assert_eq!(log[0].subject, "feat(cli): add -a");
+        assert_eq!(log[0].files, ["src/main.rs", "README.md"]);
+        assert_eq!(log[1].files, ["README.md"]);
+        assert!(log[2].files.is_empty());
     }
 }
