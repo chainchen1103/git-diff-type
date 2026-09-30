@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 (2026-10-01)
+
+gca learns more from the repository's history: the types the files you are
+committing got, and how your own recent commits differ from what it would
+have suggested, count toward the type, and the scope prompt follows the
+files and your own commits.
 
 ### Added
 
