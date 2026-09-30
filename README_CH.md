@@ -88,10 +88,16 @@ gca src/auth tests/auth    # 只 commit 這些路徑（包含新檔案），其�
 
 互動流程：
 
-1. **類型**：依機率排序，按 Enter 採用預選的；不在前幾名時選「other type…」。
+1. **類型**：依機率排序。排序會參考 diff、事先已知的摘要（`-m` 或[草稿](#摘要草稿)），
+   並偏向這個專案最近 500 個 commit 最常用的類型。按 Enter 採用預選的；不在前幾名時選「other type…」。
 2. **Scope**：只有專案本身在用 scope 時才會問。預填的是**這些檔案過去最常用的 scope**
    （從最近 500 個 commit 學來，不計 bot），可直接改或清空。
-3. **摘要**：一行描述；整行 header 超過 100 字元會被擋下（commitlint 的預設上限）。
+3. **摘要**：一行描述。機械性的變更會先擬好一個，例如 `bump zod from 3.22.0 to 3.23.8`、
+   `release v1.1.0`（見[摘要草稿](#摘要草稿)）：按 Enter 採用、直接打字取代、按 Tab 放到輸入列上修改。
+   整行 header 超過 100 字元會被擋下（commitlint 的預設上限）。
+
+設定 `gca config order subject-first` 後會先問摘要，再用摘要一起排序類型，第一個建議正確的機會大幅提高
+（見[參考摘要](#參考摘要)）。選好的類型與 scope 讓 header 超過長度時，gca 會請你縮短摘要。
 
 Esc 或 Ctrl-C 隨時取消，暫存區不受影響。`-a` 和指定路徑都先在暫存區的臨時副本上試算，
 取消時真正的暫存區完全不變。
@@ -120,6 +126,8 @@ Esc 或 Ctrl-C 隨時取消，暫存區不受影響。`-a` 和指定路徑都先
 `--scope <scope>`，不要 scope 則用 `--scope ""`），或 `gca -y -m "update guide"` 直接採用建議的類型與 scope。
 沒有終端機時，gca 會列出還缺哪些參數，而不是卡住。
 
+用 `-m` 給的摘要也會拿來判斷類型，第一個建議正確的機會大幅提高，見[參考摘要](#參考摘要)。
+
 結束代碼：`0` 已 commit（或 dry run 完成）、`1` 沒有可 commit 的內容／取消／git 失敗、
 `2` 參數錯誤、`130` Ctrl-C。
 
@@ -128,18 +136,65 @@ Esc 或 Ctrl-C 隨時取消，暫存區不受影響。`-a` 和指定路徑都先
 設定存在 git config；預設寫入全域，加 `--local` 只作用於目前的儲存庫。命令列選項優先。
 
 ```
-gca config push              # 顯示目前設定（預設 never：不 push）
-gca config push ask          # commit 後詢問是否 push
-gca config push auto --local # 這個儲存庫每次都 push
-gca config remote upstream   # push 到這裡（未設定時：分支的 upstream，其次 origin）
+gca config push                 # 顯示目前設定（預設 never：不 push）
+gca config push ask             # commit 後詢問是否 push
+gca config push auto --local    # 這個儲存庫每次都 push
+gca config remote upstream      # push 到這裡（未設定時：分支的 upstream，其次 origin）
+gca config order subject-first  # 先問摘要，再用摘要一起排序類型
+gca config order type-first     # 先問類型（預設）
 ```
 
-`gca.push` 的值無效時，gca 會在暫存任何東西之前就停止。
+`gca.push` 或 `gca.order` 的值無效時，gca 會在暫存任何東西之前就停止。
+
+### Commit hook
+
+`gca hook install` 會在儲存庫加上 `prepare-commit-msg` hook（有設定 `core.hooksPath` 時裝在那裡），
+讓不經過 gca 的 commit 也有類型：
+
+- `git commit -m "make parsing faster"`，以及直接送出訊息框內容的 git 圖形介面：前面會加上
+  `gca -y` 會選的類型，例如 `perf: make parsing faster`。和 `gca -m` 一樣，摘要也會拿來判斷類型。
+- `git commit` 開啟編輯器時：第一行先填好類型，有草稿時接著填上摘要，排序結果以註解列在下面。
+- 已經以類型或其他 `word:` 開頭的訊息、merge、revert、cherry-pick、rebase 與 amend 都保留原本的訊息。
+
+hook 絕不會擋下 commit。`GCA_HOOK=0 git commit ...` 可以略過一次，`gca hook uninstall` 則會移除它。
+已經有別的 hook 時，gca 不會覆蓋，請改在那個 hook 裡加上 `gca hook run "$@" || true`。
+
+### commitlint
+
+專案有 commitlint 設定時，gca 會遵守其中等級 2（commitlint 會擋下 commit）的 `type-enum` 與 `header-max-length`：
+只建議允許的類型，專案自訂的類型（例如 `deps`）會列在「other type…」裡、也能用 `-t` 指定，header 長度上限也改用專案的設定而不是 100。
+
+`.commitlintrc`、`.commitlintrc.json` 與 `package.json` 的 `commitlint` 欄位以 JSON 讀取。JavaScript、TypeScript、YAML
+設定無法在這裡執行，所以只有當這兩條規則直接寫成字面值時才讀得到，例如 `'type-enum': [2, 'always', ['feat', 'fix', 'deps']]`；
+另外也知道 `@commitlint/config-angular` 沒有 `chore`。`--dry-run --json` 的 `commitlint` 欄位會顯示讀到的內容。
 
 ### 預選規則
 
 當所有變更的檔案都屬於文件、測試或 CI 設定（例如 `docs/`、`*_test.go`、`.github/workflows/`），
-會預選 `docs`、`test` 或 `ci`（前提是模型有這個類型），你仍可改選其他類型。
+會預選 `docs`、`test` 或 `ci`（前提是模型有這個類型），你仍可改選其他類型。發版（見下方）也同樣會預選 `chore`。
+
+### 摘要草稿
+
+只有暫存的變更符合下列模式時，gca 才會擬好摘要：
+
+| 暫存的變更 | 草稿 |
+| --- | --- |
+| `package.json`、`Cargo.toml`、`pyproject.toml`、`requirements*.txt`、`go.mod` 或 workflow 的 `uses:` 裡的依賴版本 | `bump zod from 3.22.0 to 3.23.8`、`downgrade …`、`bump vite and vitest`、`bump 12 dependencies` |
+| 新增或移除依賴 | `add tempfile dependency`、`remove 3 dependencies` |
+| 只有 lockfile | `update Cargo.lock`、`update lockfiles` |
+| 套件本身的版本，連同 lockfile 與 changelog | `release v1.1.0`，並預選 `chore` |
+| 只搬移或改名、內容沒改的檔案 | `rename lib.rs to core.rs`、`move util.rs to src/core/`、`rename lib/a/ to lib/b/` |
+| 刪除檔案 | `remove scripts/old.sh`、`remove 4 files from legacy/` |
+| 新增或刪除測試、一份文件或一個 workflow 檔 | `add tests for parser`、`add install docs`、`add release workflow` |
+| 文件裡只改一個字的錯字 | `fix typo in README` |
+
+其他變更都不會有草稿，包括連同程式碼一起改的依賴升級：像「update README」這種籠統的摘要，人很少照用。
+`--dry-run` 會印出草稿，`--dry-run --json` 則放在 `subject_draft`。
+
+在[準確率](#準確率)的三組測試資料中，人寫的 commit 有 5.2% 會拿到草稿（141,213 個中的 7,402 個）：
+3,359 個依賴變更、2,146 個發版，以及 1,897 個搬移、刪除、新增檔案與錯字修正。發版的 commit，
+作者有 96.6% 選了 `chore`。草稿寫的是改了什麼，作者常寫的卻是為什麼改，只有 6.8% 的摘要與草稿一字不差，
+所以草稿只是預設值，直接打字就能換掉。
 
 ## 準確率
 
@@ -177,6 +232,42 @@ bot 產生的 commit 另外統計在 `eval/results.json`。
 變更的差別在於**意圖**，diff 很少透露。這也是 gca 給你排序好的清單、而不是替你決定的原因；
 commit 前請確認建議的類型。
 
+### 參考摘要
+
+摘要在選類型之前就已知時（`-m` 或[草稿](#摘要草稿)），gca 也會讀它：「speed up」「rename」這類字眼
+說出了 diff 看不出的意圖。在同一批 commit 上，用作者自己寫的摘要（去掉類型前綴）測試：
+
+| 測試資料 | 只看 diff | 只看摘要 | 兩者合併（gca 的做法） |
+| --- | ---: | ---: | ---: |
+| **沒看過的專案**，訓練後的 commit | 43.5% · 85.9% · 42.9% | 58.0% · 86.6% · 36.5% | **61.3% · 90.4% · 50.8%** |
+| 沒看過的專案，較早的歷史 | 44.6% · 83.7% · 36.2% | 55.1% · 85.7% · 34.8% | 57.9% · 88.4% · 45.5% |
+| 訓練過的專案，訓練後的 commit | 58.0% · 89.7% · 44.9% | 60.5% · 88.2% · 38.7% | 67.9% · 93.6% · 52.0% |
+
+每格依序是：第一個建議正確 · 正確類型在前 3 · 各類型平均召回率。在第一列，`refactor` 從從未排第一
+變成 26.6%，`perf` 從 2.7% 提高到 18.4%。檔案路徑本身就看得出的類型略降（`docs` 77.7% → 75.7%、
+`ci` 77.9% → 76.7%），`test` 降得較多（71.2% → 58.7%）；所有檔案都符合時，預選規則仍會預選這三種。
+
+摘要模型是以單字與相鄰兩字為特徵的邏輯斯迴歸，用和 diff 模型相同的 commit 的摘要訓練（`train_subject.py`）。
+gca 把兩個模型的機率相乘：摘要的機率取 0.25 次方，並以 0.15 次方除去各類型在訓練資料中的比例。
+這兩個設定是在另外保留的六個訓練專案上選的，沒有用到測試資料。
+想讓每次 commit 都參考摘要，就設定先問摘要：`gca config order subject-first`。
+
+### 參考專案歷史
+
+每個專案都有自己的習慣：有的把依賴更新歸在 `chore`，有的歸在 `build`；有的從不寫 `refactor`。
+gca 會統計最近 500 個 commit 裡由人寫的類型（不計 bot），在與訓練資料的比例不同之處，把排序往這個專案的習慣調整。
+測試時每個 commit 只看得到在它之前的 commit：
+
+| 測試資料 | 只看 diff | diff＋歷史 | diff＋摘要 | diff＋摘要＋歷史 |
+| --- | ---: | ---: | ---: | ---: |
+| **沒看過的專案**，訓練後的 commit | 43.5% · 85.9% · 42.9% | 51.1% · 89.9% · 48.0% | 61.3% · 90.4% · 50.8% | **66.9% · 93.7% · 55.1%** |
+| 沒看過的專案，較早的歷史 | 44.6% · 83.7% · 36.2% | 51.0% · 88.1% · 38.9% | 57.9% · 88.4% · 45.5% | 63.1% · 92.5% · 47.2% |
+| 訓練過的專案，訓練後的 commit | 58.0% · 89.7% · 44.9% | 58.1% · 91.6% · 46.8% | 67.9% · 93.6% · 52.0% | 68.0% · 94.4% · 53.7% |
+
+（第一個建議正確 · 正確類型在前 3 · 各類型平均召回率）。在沒看過的專案上效果最明顯；訓練過的專案，
+模型早已學到它們的習慣。歷史的份量（權重 0.1，有摘要時 0.25，並以相當於 10 個 commit 的訓練比例平滑）
+是在另外保留的六個訓練專案上選的。類型比例和訓練資料相同的專案，排序不會改變；歷史裡沒有 Conventional Commits 的專案不受影響。
+
 完整數字與重現方式見 [eval/README.md](eval/README.md)。
 
 ## 運作方式
@@ -189,10 +280,14 @@ commit 前請確認建議的類型。
 2. **訓練**：TF-IDF（diff 內容）＋檔案路徑與副檔名詞袋＋新增與刪除詞彙的重疊程度＋增刪行數，
    餵給機率校準過的 LinearSVC，輸出 11 個類型的機率。diff 只讀前 20,000 個字元。
    接著依各類型在訓練資料中的常見程度修正機率（`eval/tune_prior.py`）；不這樣做的話，
-   大部分的 diff 都會被判成 `fix`，`refactor`、`perf` 幾乎不會排第一。
-3. **匯出**：`export_model.py` 把整條 sklearn pipeline 攤平成 `out/model_v2.json`。
-4. **推論**：Rust CLI 在編譯時嵌入這份 JSON，自己實作同樣的前向運算，所以安裝後只需要 git，
-   不需要 Python 或模型檔。`gca-rs/tests/parity.rs` 驗證 Rust 與 Python 的機率誤差小於 1e-6。
+   大部分的 diff 都會被判成 `fix`，`refactor`、`perf` 幾乎不會排第一。摘要在選類型前已知時，
+   另一個較小的模型會讀摘要：以單字與相鄰兩字為特徵的邏輯斯迴歸（`train_subject.py`，
+   見[參考摘要](#參考摘要)）。
+3. **匯出**：`export_model.py` 把整條 sklearn pipeline 攤平成 `out/model_v2.json`；
+   `train_subject.py` 直接寫出 `out/subject_model.json`。
+4. **推論**：Rust CLI 在編譯時嵌入這兩份 JSON，自己實作同樣的前向運算，所以安裝後只需要 git，
+   不需要 Python 或模型檔。`gca-rs/tests/parity.rs` 驗證 Rust 與 Python 的機率誤差小於 1e-6
+   （摘要模型小於 1e-9）。執行時 gca 也會讀儲存庫最近 500 個 commit，用來建議 scope 與參考專案的類型比例。
    匯出新權重後，重新編譯 CLI，或用 `--model` 指定 JSON。
 
 gca 讀 diff 時固定使用 git 的預設格式（不受 `diff.noprefix`、`color.ui` 等個人設定影響），
@@ -218,6 +313,13 @@ python verify_export.py --data datasets/test_unseen_recent.jsonl
 python gca-rs/gen_fixtures.py --synthetic --out gca-rs/tests/synthetic_fixtures.json
 python gca-rs/gen_fixtures.py --data datasets/test_unseen_recent.jsonl
 bash eval/run.sh                        # 在三組測試集上評估
+python eval/tune_fusion.py ...          # 摘要要佔多少份量（見 eval/README.md）
+python train_subject.py --data datasets/train.jsonl datasets/external.jsonl --weight 0.25 --prior-power 0.15
+python train_subject.py --write-fixtures gca-rs/tests/subject_fixtures.json \
+    --fixture-data datasets/test_unseen_recent.jsonl
+python eval/evaluate_subject.py --sets datasets/test_*.jsonl
+python eval/tune_history.py ...         # 專案歷史要佔多少份量（見 eval/README.md）
+python eval/evaluate_history.py --sets datasets/test_*.jsonl --history datasets/train.jsonl
 cd gca-rs && cargo test --release && cargo build --release --bin gca
 ```
 
@@ -255,15 +357,12 @@ CI 在每次 push 時執行這些檢查（Rust 部分在 Windows、macOS、Linux
 
 ## Roadmap
 
-- 離線草擬摘要：機械性的 commit（升級套件、改名、發版、只新增測試或文件）用模板直接寫出；
-  其他的由內建小模型接在已選的類型與 scope 後面補完，預先填好，按 Enter 接受或直接修改
-- 也從摘要判斷類型：「speed up」「rename」這類字眼說出了 diff 常看不出的意圖，
-  預期對 `refactor`、`perf` 幫助最大
-- 依使用者在自己儲存庫的選擇做本地微調，先從用各儲存庫自己的類型分佈校正開始
-- 讀取專案的 commitlint 設定（自訂類型、header 長度）
+- 其他 commit 也離線草擬摘要：由內建小模型接在已選的類型與 scope 後面補完
+  （機械性的 commit 已經有[草稿](#摘要草稿)）
+- 從使用者沒採用建議、改選其他類型的紀錄學習（專案本身的類型比例 gca 已經會參考）
 - 改善 `refactor` / `perf`：加入「行為是否改變」相關的特徵
-- 提供 `prepare-commit-msg` hook，讓編輯器與 git 圖形介面的 commit 視窗也能預填建議
-- 發現暫存內容混雜了不相關的變更時，建議拆成幾個 commit；看起來是破壞性變更
-  （例如刪除 export、改動函式簽名）時，建議加上 `!`
+- 發現暫存內容混雜了不相關的變更時，建議拆成幾個 commit
+- 破壞性變更時建議加上 `!`。只看有沒有刪掉 export 不夠：在沒看過的專案上，只有 0.5% 的 commit 標了破壞性變更，
+  而刪除公開定義的 3.7% commit 裡，只有 4.1% 標了（`eval/breaking_signal.py`）
 
 [更新紀錄](CHANGELOG.md)

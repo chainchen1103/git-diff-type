@@ -1,5 +1,65 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **commitlint configs.** gca follows a project's `type-enum` and
+  `header-max-length` rules: it suggests only allowed types, offers the
+  project's own types under "other type…" and with `-t`, and uses the
+  project's header limit. JSON configs and `package.json` are read as JSON;
+  JavaScript, TypeScript and YAML configs when the rules are written out
+  literally. `--dry-run --json` reports them under `commitlint`.
+- **The project's history counts toward the type.** gca counts the types
+  people gave the last 500 commits and tilts the ranking toward the project's
+  own mix. On recent commits of projects gca never saw, the first suggestion
+  is right 51.1% of the time instead of 43.5% from the diff alone, and 66.9%
+  instead of 61.3% with the subject. `--dry-run --json` reports how many
+  commits it read as `ranked_with_history`. `eval/tune_history.py` chose the
+  weights and `eval/evaluate_history.py` scores them.
+- **`gca config order subject-first`** asks for the subject before the type,
+  so the types are ranked with it. `type-first` stays the default. If the
+  chosen type and scope then make the header too long, gca asks to shorten
+  the subject.
+- **`gca hook install`** adds a `prepare-commit-msg` hook, so plain
+  `git commit`, editors and git GUIs get the suggested type too: a subject
+  from `git commit -m` or a GUI's message box gets the type `gca -y` would
+  pick, and the editor opens with the type, any subject draft and the
+  ranking. Typed prefixes, merges, reverts, cherry-picks, rebases and amended
+  commits keep their messages; the hook never stops a commit, and
+  `GCA_HOOK=0` skips it once. `gca hook uninstall` removes it.
+- **The subject counts toward the type.** When the subject is known before
+  the type, passed with `-m` or drafted, a second model reads it and its
+  probabilities are combined with the diff model's. On recent commits of
+  projects gca never saw, the first suggestion is right 61.3% of the time
+  instead of 43.5%, and the right type is in the top three 90.4% instead of
+  85.9%. `--dry-run --json` names the subject it used as
+  `ranked_with_subject`. `train_subject.py` trains the model,
+  `eval/tune_fusion.py` chose how much it counts, and
+  `eval/evaluate_subject.py` scores it.
+- **Subject drafts** for mechanical changes: dependency bumps, additions and
+  removals in `package.json`, `Cargo.toml`, `pyproject.toml`,
+  `requirements*.txt`, `go.mod` and GitHub Actions workflows; lockfile
+  updates; releases; renames and moves; deleted files; new or removed tests,
+  docs and workflows; one-word typo fixes. The draft is the subject prompt's
+  default: Enter takes it, typing replaces it, and Tab puts it on the line to
+  edit. A release also pre-selects `chore`. Other changes get no draft.
+- `--dry-run` prints the draft; `--dry-run --json` adds `subject_draft`, and
+  `from` for a renamed file.
+
+### Fixed
+
+- `-a` and paths could miss a change made right after the last `git add`,
+  or report that nothing had changed: the copy of the index they preview in
+  looked newer than the index, so git trusted file times it should have
+  checked. The copy now keeps the index's time.
+- With `diff.renames` turned off, a moved file was read as a deletion plus an
+  addition, and its whole content went to the model as changed lines. gca and
+  the miner now pin rename detection like the other diff settings.
+- With `NO_COLOR` set, the subject prompt showed two colons (`fix::`).
+- A mistyped command such as `gca hooks install` showed git's pathspec
+  error; gca now says no file matches `hooks` and lists its commands.
+
 ## 0.2.0 (2026-09-30)
 
 gca now follows `git commit`'s conventions: it commits what you staged, never

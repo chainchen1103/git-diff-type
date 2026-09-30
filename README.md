@@ -101,13 +101,23 @@ If nothing is staged, gca does not stage anything for you; it shows
 
 The prompts:
 
-1. **Type**, ranked by probability. Enter accepts the pre-selected one;
-   "other type…" lists the rest.
+1. **Type**, ranked by probability. The ranking reads the diff, the subject
+   when it is already known (from `-m` or a [draft](#subject-drafts)), and
+   leans toward the types the project itself used most in its last 500
+   commits. Enter accepts the pre-selected one; "other type…" lists the rest.
 2. **Scope**, only if the project uses scopes. It is pre-filled with **the
    scope used most often for these files**, learned from the last 500 commits
    (bot commits ignored). Edit or clear it.
-3. **Subject**, one line. A header longer than 100 characters (commitlint's
-   default limit) is rejected.
+3. **Subject**, one line. For a mechanical change gca drafts one, such as
+   `bump zod from 3.22.0 to 3.23.8` or `release v1.1.0` (see
+   [Subject drafts](#subject-drafts)): Enter takes it, typing replaces it, and
+   Tab puts it on the line to edit. A header longer than 100 characters
+   (commitlint's default limit) is rejected.
+
+With `gca config order subject-first`, the subject comes first and the types
+are then ranked with it, which makes the first suggestion right far more
+often (see [With the subject](#with-the-subject)). If the chosen type and
+scope make the header too long, gca asks you to shorten the subject.
 
 Esc or Ctrl-C cancels at any point and leaves your staged changes alone.
 `-a` and paths are tried out in a temporary copy of the index, so cancelling
@@ -138,6 +148,10 @@ Without prompts, for scripts: `gca -a -t fix -m "handle empty diff"`, adding
 `gca -y -m "update guide"` to take the suggested type and scope. Without a
 terminal, gca names the flags it still needs instead of hanging.
 
+A subject given with `-m` counts toward the suggested type, which makes the
+first suggestion right far more often; see
+[With the subject](#with-the-subject).
+
 Exit codes: `0` committed (or dry run done), `1` nothing to commit, cancelled
 or git failed, `2` bad arguments, `130` Ctrl-C.
 
@@ -147,20 +161,83 @@ Settings live in git config, globally by default, or for the current
 repository with `--local`. Options on the command line win.
 
 ```
-gca config push              # show the setting (default never: do not push)
-gca config push ask          # ask after each commit
-gca config push auto --local # always push in this repository
-gca config remote upstream   # push there (default: the branch's upstream, then origin)
+gca config push                 # show the setting (default never: do not push)
+gca config push ask             # ask after each commit
+gca config push auto --local    # always push in this repository
+gca config remote upstream      # push there (default: the branch's upstream, then origin)
+gca config order subject-first  # ask for the subject first; it then ranks the types
+gca config order type-first     # ask for the type first (default)
 ```
 
-An invalid `gca.push` value stops gca before anything is staged.
+An invalid `gca.push` or `gca.order` value stops gca before anything is
+staged.
+
+### Commit hook
+
+`gca hook install` adds a `prepare-commit-msg` hook to the repository (in
+`core.hooksPath`, if that is set), so commits made without gca get a type too:
+
+- `git commit -m "make parsing faster"`, and git GUIs that commit their
+  message box as it is, get the type `gca -y` would pick:
+  `perf: make parsing faster`. The subject counts toward the type, as with
+  `gca -m`.
+- `git commit` opens the editor with the type on the first line, followed by
+  the subject draft if there is one, and the ranking in a comment below.
+- Messages that already start with a type or another `word:` prefix, merges,
+  reverts, cherry-picks, rebases and amended commits keep their messages.
+
+The hook never stops a commit. `GCA_HOOK=0 git commit ...` skips it once, and
+`gca hook uninstall` removes it. gca does not replace a hook that is already
+there; add `gca hook run "$@" || true` to that one instead.
+
+### commitlint
+
+If the project has a commitlint config, gca follows its `type-enum` and
+`header-max-length` rules at level 2, the ones that make commitlint reject a
+commit. It suggests only the allowed types, lists the project's own types
+(such as `deps`) under "other type…" and accepts them with `-t`, and checks
+the header against the project's limit instead of 100.
+
+`.commitlintrc`, `.commitlintrc.json` and the `commitlint` key of
+`package.json` are read as JSON. JavaScript, TypeScript and YAML configs
+cannot be run here, so gca reads the two rules when they are written out
+literally, as in `'type-enum': [2, 'always', ['feat', 'fix', 'deps']]`, and
+knows that `@commitlint/config-angular` has no `chore`. `--dry-run --json`
+shows what it found under `commitlint`.
 
 ### Pre-selection rule
 
 When every changed file is documentation, a test, or CI configuration (for
 example `docs/`, `*_test.go`, `.github/workflows/`), `docs`, `test` or `ci` is
 pre-selected, as long as the model knows that type. You can still pick
-another one.
+another one. A release (see below) pre-selects `chore` the same way.
+
+### Subject drafts
+
+gca drafts the subject only when the staged change follows a pattern:
+
+| Staged change | Draft |
+| --- | --- |
+| Dependency versions in `package.json`, `Cargo.toml`, `pyproject.toml`, `requirements*.txt`, `go.mod` or a workflow's `uses:` lines | `bump zod from 3.22.0 to 3.23.8`, `downgrade …`, `bump vite and vitest`, `bump 12 dependencies` |
+| Dependencies added or removed | `add tempfile dependency`, `remove 3 dependencies` |
+| Only lockfiles | `update Cargo.lock`, `update lockfiles` |
+| The package's own version, with lockfiles and the changelog | `release v1.1.0`, and `chore` is pre-selected |
+| Files moved or renamed without edits | `rename lib.rs to core.rs`, `move util.rs to src/core/`, `rename lib/a/ to lib/b/` |
+| Files deleted | `remove scripts/old.sh`, `remove 4 files from legacy/` |
+| Tests, a doc or a workflow file added or removed | `add tests for parser`, `add install docs`, `add release workflow` |
+| One-word typo fixes in docs | `fix typo in README` |
+
+Anything else gets no draft, including a dependency bump that comes with a
+code change: people rarely keep a generic subject such as "update README".
+`--dry-run` prints the draft, and `--dry-run --json` has it as
+`subject_draft`.
+
+On the three test sets under [Accuracy](#accuracy), 5.2% of the commits people
+wrote get a draft (7,402 of 141,213): 3,359 dependency changes, 2,146 releases
+and 1,897 moved, removed or added files and typo fixes. For the releases,
+authors chose `chore` 96.6% of the time. A draft says what changed, while
+authors often wrote why: 6.8% of their subjects match the draft word for word,
+so a draft is only a default you can type over.
 
 ## Accuracy
 
@@ -206,6 +283,56 @@ changes in *intent*, which the diff rarely shows. That is why gca offers a
 ranked list instead of deciding for you; review the suggestion before you
 commit.
 
+### With the subject
+
+When the subject is known before the type, from `-m` or a
+[draft](#subject-drafts), gca reads it too: words such as "speed up" or
+"rename" state the intent the diff hides. On the same commits, with the subject
+each author wrote (without its type prefix):
+
+| Test set | Diff only | Subject only | Both, as gca combines them |
+| --- | ---: | ---: | ---: |
+| **Projects never seen**, after training | 43.5% · 85.9% · 42.9% | 58.0% · 86.6% · 36.5% | **61.3% · 90.4% · 50.8%** |
+| Projects never seen, older history | 44.6% · 83.7% · 36.2% | 55.1% · 85.7% · 34.8% | 57.9% · 88.4% · 45.5% |
+| Projects seen in training, after training | 58.0% · 89.7% · 44.9% | 60.5% · 88.2% · 38.7% | 67.9% · 93.6% · 52.0% |
+
+Each cell is first suggestion right · right type in top 3 · average recall per
+type. On the first row, `refactor` commits get their own type first 26.6% of
+the time instead of never, and `perf` 18.4% instead of 2.7%. The types the
+file paths already reveal lose a little (`docs` 77.7% → 75.7%, `ci`
+77.9% → 76.7%), `test` more (71.2% → 58.7%); the path rule still pre-selects
+those three when every file fits.
+
+The subject model is logistic regression over words and pairs of words,
+trained on the subjects of the same commits as the diff model
+(`train_subject.py`). gca multiplies the two models' probabilities, with the
+subject's raised to the power 0.25 and each type's training frequency divided
+out to the power 0.15. Both settings were chosen on six training projects held
+out for the purpose, not on the test sets. To have the subject count on every
+commit, ask for it first: `gca config order subject-first`.
+
+### With the project's history
+
+Projects have habits: some file dependency updates under `chore`, others
+under `build`; some never write `refactor`. gca counts the types people gave
+the last 500 commits (bots left out) and tilts the ranking toward that mix,
+as far as it differs from the mix gca was trained on. Scored so that each
+test commit sees only the commits before it:
+
+| Test set | Diff only | Diff and history | Diff and subject | Diff, subject and history |
+| --- | ---: | ---: | ---: | ---: |
+| **Projects never seen**, after training | 43.5% · 85.9% · 42.9% | 51.1% · 89.9% · 48.0% | 61.3% · 90.4% · 50.8% | **66.9% · 93.7% · 55.1%** |
+| Projects never seen, older history | 44.6% · 83.7% · 36.2% | 51.0% · 88.1% · 38.9% | 57.9% · 88.4% · 45.5% | 63.1% · 92.5% · 47.2% |
+| Projects seen in training, after training | 58.0% · 89.7% · 44.9% | 58.1% · 91.6% · 46.8% | 67.9% · 93.6% · 52.0% | 68.0% · 94.4% · 53.7% |
+
+(first suggestion right · right type in top 3 · average recall per type).
+History helps most on projects the model never saw; on the ones it trained on,
+it had already learned their habits. How much the history counts (a weight of
+0.1, or 0.25 with a subject, smoothed with 10 commits' worth of the training
+mix) was chosen on the six held-out training projects. A project that uses
+types the way the training data did keeps its ranking, and one without
+Conventional Commits in its history is not affected.
+
 Full numbers and how to reproduce them: [eval/README.md](eval/README.md).
 
 ## How it works
@@ -223,12 +350,18 @@ Full numbers and how to reproduce them: [eval/README.md](eval/README.md).
    types. Only the first 20,000 characters of a diff are read. Each
    probability is then corrected for how common the type was in training
    (`eval/tune_prior.py`); otherwise most diffs would be called `fix`, and
-   `refactor` or `perf` would almost never come first.
+   `refactor` or `perf` would almost never come first. A second, smaller
+   model reads the subject when it is known before the type:
+   logistic regression over its words and pairs of words
+   (`train_subject.py`, see [With the subject](#with-the-subject)).
 3. **Export.** `export_model.py` flattens the whole sklearn pipeline into
-   `out/model_v2.json`.
-4. **Inference.** The Rust CLI embeds that JSON at build time and reimplements
-   the forward pass, so the installed CLI needs git but no Python or model
-   file. `gca-rs/tests/parity.rs` checks that Rust matches Python within 1e-6.
+   `out/model_v2.json`; `train_subject.py` writes `out/subject_model.json`.
+4. **Inference.** The Rust CLI embeds both JSON files at build time and
+   reimplements the forward passes, so the installed CLI needs git but no
+   Python or model file. `gca-rs/tests/parity.rs` checks that Rust matches
+   Python within 1e-6 (1e-9 for the subject model). At run time gca also
+   reads the repository's last 500 commits, for the scope and for the
+   project's mix of types.
    After exporting new weights, rebuild the CLI or pass the JSON with `--model`.
 
 gca always reads the diff in git's default format, whatever personal settings
@@ -254,6 +387,13 @@ python verify_export.py --data datasets/test_unseen_recent.jsonl
 python gca-rs/gen_fixtures.py --synthetic --out gca-rs/tests/synthetic_fixtures.json
 python gca-rs/gen_fixtures.py --data datasets/test_unseen_recent.jsonl
 bash eval/run.sh                        # score the three test sets
+python eval/tune_fusion.py ...          # how much the subject counts (eval/README.md)
+python train_subject.py --data datasets/train.jsonl datasets/external.jsonl --weight 0.25 --prior-power 0.15
+python train_subject.py --write-fixtures gca-rs/tests/subject_fixtures.json \
+    --fixture-data datasets/test_unseen_recent.jsonl
+python eval/evaluate_subject.py --sets datasets/test_*.jsonl
+python eval/tune_history.py ...         # how much the project's history counts (eval/README.md)
+python eval/evaluate_history.py --sets datasets/test_*.jsonl --history datasets/train.jsonl
 cd gca-rs && cargo test --release && cargo build --release --bin gca
 ```
 
@@ -299,20 +439,15 @@ builds the installer on Windows.
 
 ## Roadmap
 
-- Draft the subject line, still offline: templates for mechanical commits
-  (dependency bumps, renames, releases, commits that only add tests or docs),
-  and a small built-in model that completes the subject after the chosen type
-  and scope, pre-filled for you to accept or edit
-- Suggest the type from the subject too: words such as "speed up" or "rename"
-  state the intent a diff often hides, which should help `refactor` and `perf` most
-- Adapt locally to the types a user picks in their own repositories, starting
-  with each repository's own mix of types
-- Read the project's commitlint config (custom types, header length)
+- Draft the subject of other commits too, still offline: a small built-in
+  model that completes the subject after the chosen type and scope (mechanical
+  commits already get [drafts](#subject-drafts))
+- Learn from the types a user picks over the suggestion, beyond the project's
+  mix of types that gca already reads
 - Better `refactor` / `perf` with features about whether behavior changed
-- A `prepare-commit-msg` hook, so editors and git GUIs get the suggestion in
-  their commit box too
-- Notice staged changes that mix unrelated work and suggest splitting them;
-  suggest `!` when a change looks breaking, such as a removed export or a
-  changed signature
+- Notice staged changes that mix unrelated work and suggest splitting them
+- Suggest `!` for breaking changes. Spotting removed exports is not enough:
+  on the unseen projects only 0.5% of commits are marked breaking, and of the
+  3.7% that remove a public definition, 4.1% are (`eval/breaking_signal.py`)
 
 [Changelog](CHANGELOG.md)

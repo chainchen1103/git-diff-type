@@ -17,12 +17,15 @@ pub struct Stats {
 pub struct FileChange {
     pub status: char,
     pub path: String,
+    /// For a rename or copy: where it came from, and how similar it is (0-100).
+    pub old_path: Option<String>,
+    pub score: Option<u8>,
 }
 
 /// Settings that change what `git diff` prints. The model was trained on
 /// git's defaults, so these are pinned whatever the user has configured.
 /// Keep in sync with DIFF_CONFIG in miner.py; staged_diff() matches its DIFF_FLAGS.
-const DIFF_CONFIG: [&str; 8] = [
+const DIFF_CONFIG: [&str; 10] = [
     "-c",
     "diff.noprefix=false",
     "-c",
@@ -31,6 +34,9 @@ const DIFF_CONFIG: [&str; 8] = [
     "diff.relative=false",
     "-c",
     "core.quotePath=true",
+    // A moved file is one rename, not a deletion plus an addition.
+    "-c",
+    "diff.renames=true",
 ];
 
 fn git(index: Option<&Path>) -> Command {
@@ -111,6 +117,42 @@ pub fn operation_in_progress() -> Result<Option<&'static str>> {
     Ok(None)
 }
 
+/// Whether git is replaying commits (a merge, cherry-pick, revert or rebase),
+/// which keep their original messages.
+pub fn replaying() -> Result<bool> {
+    if operation_in_progress()?.is_some() {
+        return Ok(true);
+    }
+    for dir in ["rebase-merge", "rebase-apply", "sequencer"] {
+        if git_path(dir)?.exists() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// The top directory of the work tree.
+pub fn toplevel() -> Result<PathBuf> {
+    Ok(PathBuf::from(
+        run(None, &["rev-parse", "--show-toplevel"])?.trim(),
+    ))
+}
+
+/// Where git looks for a hook: `.git/hooks`, or core.hooksPath, which a
+/// relative path means from the top of the work tree.
+pub fn hook_path(name: &str) -> Result<PathBuf> {
+    let top = toplevel()?;
+    let top_arg = top.to_string_lossy();
+    let rel = format!("hooks/{name}");
+    let out = run(None, &["-C", &top_arg, "rev-parse", "--git-path", &rel])?;
+    let path = PathBuf::from(out.trim());
+    Ok(if path.is_absolute() {
+        path
+    } else {
+        top.join(path)
+    })
+}
+
 /// A throwaway copy of the index. Previewing `-a` or a list of paths stages
 /// into this copy, so the user's own index is never touched before the
 /// commit is confirmed. Removed when dropped.
@@ -127,8 +169,7 @@ impl ScratchIndex {
         };
         let path = real.with_file_name(format!("gca-index-{}", std::process::id()));
         if real.exists() {
-            std::fs::copy(&real, &path)
-                .with_context(|| format!("could not copy the index to {}", path.display()))?;
+            copy_index(&real, &path)?;
         }
         Ok(Self { path })
     }
@@ -136,6 +177,20 @@ impl ScratchIndex {
     pub fn path(&self) -> &Path {
         &self.path
     }
+}
+
+/// Copies the index and keeps its modification time. Git trusts an entry
+/// whose file looks older than the index, so a copy that looks newer would
+/// hide a change made as soon after `git add` as the file system can tell.
+fn copy_index(from: &Path, to: &Path) -> Result<()> {
+    std::fs::copy(from, to)
+        .with_context(|| format!("could not copy the index to {}", to.display()))?;
+    let time = std::fs::metadata(from).and_then(|m| m.modified());
+    let file = std::fs::File::options().write(true).open(to);
+    if let (Ok(time), Ok(file)) = (time, file) {
+        let _ = file.set_modified(time);
+    }
+    Ok(())
 }
 
 impl Drop for ScratchIndex {
@@ -192,13 +247,22 @@ fn parse_name_status_z(out: &str) -> Vec<FileChange> {
         let Some(letter) = status.chars().next() else {
             continue;
         };
-        let mut path = fields.next().unwrap_or_default();
-        if letter == 'R' || letter == 'C' {
-            path = fields.next().unwrap_or_default();
-        }
+        let first = fields.next().unwrap_or_default();
+        let (path, old_path, score) = if letter == 'R' || letter == 'C' {
+            let score = status[1..].parse::<u8>().ok();
+            (
+                fields.next().unwrap_or_default(),
+                Some(first.to_string()),
+                score,
+            )
+        } else {
+            (first, None, None)
+        };
         files.push(FileChange {
             status: letter,
             path: path.to_string(),
+            old_path,
+            score,
         });
     }
     files
@@ -414,6 +478,24 @@ pub fn set_config(key: &str, value: &str, local: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_index_copy_keeps_its_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let (from, to) = (dir.path().join("index"), dir.path().join("copy"));
+        std::fs::write(&from, b"DIRC").unwrap();
+        // whole 100 ns, which every file system CI runs on can store
+        let past = std::time::UNIX_EPOCH + std::time::Duration::new(1_700_000_000, 123_456_700);
+        std::fs::File::options()
+            .write(true)
+            .open(&from)
+            .unwrap()
+            .set_modified(past)
+            .unwrap();
+        copy_index(&from, &to).unwrap();
+        assert_eq!(std::fs::read(&to).unwrap(), b"DIRC");
+        assert_eq!(std::fs::metadata(&to).unwrap().modified().unwrap(), past);
+    }
 
     #[test]
     fn numstat_z_plain_binary_and_rename() {

@@ -80,6 +80,80 @@ pub fn scope_hint(log: &[LogEntry], files: &[String]) -> ScopeHint {
     }
 }
 
+/// How many of the recent commits people gave each type.
+pub fn type_counts(log: &[LogEntry]) -> HashMap<String, usize> {
+    let mut counts = HashMap::new();
+    for entry in log.iter().filter(|e| !is_bot(&e.author)) {
+        if let Some((kind, _)) = message::parse_subject(&entry.subject) {
+            *counts.entry(kind.to_string()).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
+/// How much the project's own mix of types counts, without and with a known
+/// subject. Chosen on projects held out from training (eval/tune_history.py).
+pub const HABIT_WEIGHT: f64 = 0.1;
+pub const HABIT_WEIGHT_WITH_SUBJECT: f64 = 0.25;
+/// The project's mix is smoothed with this many commits' worth of the
+/// training mix, so a short history moves the ranking little.
+const PSEUDO_COMMITS: f64 = 10.0;
+
+/// Commits of each type the models were trained on (out/train_report.json).
+const TRAINING_MIX: [(&str, f64); 11] = [
+    ("fix", 128219.0),
+    ("feat", 84737.0),
+    ("chore", 64801.0),
+    ("docs", 46886.0),
+    ("refactor", 37082.0),
+    ("test", 24902.0),
+    ("build", 19428.0),
+    ("ci", 14304.0),
+    ("style", 8321.0),
+    ("perf", 7923.0),
+    ("revert", 1342.0),
+];
+
+/// `p ∝ p · (q / π)^weight`: q is the project's mix of types, smoothed
+/// toward the training mix π, so a project that uses the types as the
+/// training data did keeps its ranking. `None` without typed history, or
+/// for a model with types the training mix does not have.
+pub fn weigh_by_habits(
+    classes: &[String],
+    probs: &[f64],
+    counts: &HashMap<String, usize>,
+    weight: f64,
+) -> Option<Vec<f64>> {
+    let total_train: f64 = TRAINING_MIX.iter().map(|(_, n)| n).sum();
+    let prior: Vec<f64> = classes
+        .iter()
+        .map(|c| {
+            TRAINING_MIX
+                .iter()
+                .find(|(kind, _)| kind == c)
+                .map(|(_, n)| n / total_train)
+        })
+        .collect::<Option<_>>()?;
+    let n: Vec<f64> = classes
+        .iter()
+        .map(|c| counts.get(c).copied().unwrap_or(0) as f64)
+        .collect();
+    let total: f64 = n.iter().sum();
+    if total == 0.0 || probs.len() != classes.len() {
+        return None;
+    }
+    let scores: Vec<f64> = probs
+        .iter()
+        .zip(&n)
+        .zip(&prior)
+        .map(|((p, n), pi)| {
+            let q = (n + PSEUDO_COMMITS * pi) / (total + PSEUDO_COMMITS);
+            (p + 1e-12).ln() + weight * (q / pi).ln()
+        })
+        .collect();
+    Some(crate::subject::softmax(&scores))
+}
+
 /// Highest count wins; a tie goes to the scope used most recently.
 fn most_used(counts: &HashMap<&str, (usize, usize)>) -> Option<String> {
     counts
@@ -106,6 +180,75 @@ mod tests {
 
     fn staged(files: &[&str]) -> Vec<String> {
         files.iter().map(|f| f.to_string()).collect()
+    }
+
+    fn by(author: &str, subject: &str) -> LogEntry {
+        LogEntry {
+            author: author.into(),
+            subject: subject.into(),
+            files: vec![],
+        }
+    }
+
+    #[test]
+    fn counts_the_types_people_used() {
+        let log = [
+            by("Ada <a@x>", "fix: one"),
+            by("Ada <a@x>", "fix(cli): two"),
+            by("Ada <a@x>", "perf!: three"),
+            by("renovate[bot] <r@x>", "chore(deps): bump"),
+            by("Ada <a@x>", "Merge branch 'x'"),
+            by("Ada <a@x>", "WIP: nothing"),
+        ];
+        let counts = type_counts(&log);
+        assert_eq!(counts.get("fix"), Some(&2));
+        assert_eq!(counts.get("perf"), Some(&1));
+        assert_eq!(counts.get("chore"), None);
+        assert_eq!(counts.values().sum::<usize>(), 3);
+    }
+
+    #[test]
+    fn habits_tilt_the_ranking_toward_the_project_s_types() {
+        let classes: Vec<String> = TRAINING_MIX.iter().map(|(k, _)| k.to_string()).collect();
+        let total: f64 = TRAINING_MIX.iter().map(|(_, n)| n).sum();
+        let flat = vec![1.0 / classes.len() as f64; classes.len()];
+        // no typed history: nothing to learn
+        assert!(weigh_by_habits(&classes, &flat, &HashMap::new(), 0.25).is_none());
+        // a project that uses types in the training proportions keeps its ranking
+        let same: HashMap<String, usize> = TRAINING_MIX
+            .iter()
+            .map(|(k, n)| (k.to_string(), (n / total * 10_000.0).round() as usize))
+            .collect();
+        let kept = weigh_by_habits(&classes, &flat, &same, 0.25).unwrap();
+        for p in &kept {
+            assert!((p - flat[0]).abs() < 1e-3, "{kept:?}");
+        }
+        // a project that writes many perf commits lifts perf
+        let perf: HashMap<String, usize> =
+            [("perf".to_string(), 200), ("fix".to_string(), 50)].into();
+        let tilted = weigh_by_habits(&classes, &flat, &perf, 0.25).unwrap();
+        let at = |k: &str| tilted[classes.iter().position(|c| c == k).unwrap()];
+        assert!(
+            at("perf") > at("fix") && at("fix") > at("feat"),
+            "{tilted:?}"
+        );
+        assert!((tilted.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+        // a model with other types is left alone
+        let other = vec!["feat".to_string(), "wip".to_string()];
+        assert!(weigh_by_habits(&other, &[0.5, 0.5], &perf, 0.25).is_none());
+    }
+
+    #[test]
+    fn training_mix_matches_the_training_report() {
+        let report: serde_json::Value =
+            serde_json::from_str(include_str!("../../out/train_report.json")).unwrap();
+        for (kind, n) in TRAINING_MIX {
+            assert_eq!(report["labels"][kind].as_f64(), Some(n), "{kind}");
+        }
+        assert_eq!(
+            report["labels"].as_object().unwrap().len(),
+            TRAINING_MIX.len()
+        );
     }
 
     #[test]

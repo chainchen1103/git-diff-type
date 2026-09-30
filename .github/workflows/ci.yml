@@ -75,3 +75,5 @@ jobs:
         run: python -m unittest discover -s tests -v
       - name: Exported model matches the Python reference
         run: python verify_export.py --json out/model_v2.json --check-fixtures gca-rs/tests/synthetic_fixtures.json
+      - name: Exported subject model matches the Python reference
+        run: python train_subject.py --out out/subject_model.json --check-fixtures gca-rs/tests/subject_fixtures.json

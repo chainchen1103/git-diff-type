@@ -1,29 +1,38 @@
 //! gca: suggests a Conventional Commit type for the changes you are about to
 //! commit, then commits them with `git commit`.
 
+mod commitlint;
+mod draft;
 mod features;
 mod git;
 mod heuristics;
 mod history;
+mod hook;
 mod message;
 mod model;
+mod subject;
 
 use anyhow::{bail, Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
 use console::style;
 use dialoguer::theme::{ColorfulTheme, SimpleTheme, Theme};
-use dialoguer::{Confirm, Input, Select};
+use dialoguer::{Completion, Confirm, Input, Select};
+use std::collections::HashMap;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use commitlint::Rules;
+use draft::Draft;
 use git::FileChange;
 use history::ScopeHint;
 use model::Model;
+use subject::SubjectModel;
 
 const PUSH_KEY: &str = "gca.push";
 const REMOTE_KEY: &str = "gca.remote";
+const ORDER_KEY: &str = "gca.order";
 /// Diffs are cut here before feature extraction, as in training.
 const MAX_DIFF_CHARS: usize = 20_000;
 /// How many staged files to list before the prompts.
@@ -43,7 +52,8 @@ Examples:
   gca src/auth                 commit only src/auth
   gca -t fix -m \"handle empty diff\"
                                commit without prompts
-  gca --dry-run --json         print the suggestions for scripts and editors";
+  gca --dry-run --json         print the suggestions for scripts and editors
+  gca hook install             give plain `git commit` messages a type too";
 
 #[derive(Parser, Debug)]
 #[command(
@@ -62,8 +72,9 @@ struct Cli {
     #[arg(short = 'a', long = "all", conflicts_with = "paths")]
     all: bool,
 
-    /// Commit type. Skips the type prompt.
-    #[arg(short = 't', long = "type", value_name = "TYPE", value_parser = message::TYPES)]
+    /// Commit type, such as feat or fix (or one the project's commitlint
+    /// config allows). Skips the type prompt.
+    #[arg(short = 't', long = "type", value_name = "TYPE", value_parser = type_word)]
     kind: Option<String>,
 
     /// Scope, as in `feat(scope): ...`. Skips the scope prompt; "" means no scope.
@@ -142,6 +153,27 @@ enum Cmd {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
+    /// Put the suggested type into messages from plain `git commit`, editors
+    /// and git GUIs, with a prepare-commit-msg hook in this repository.
+    Hook {
+        #[command(subcommand)]
+        action: HookCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum HookCmd {
+    /// Install the hook (in core.hooksPath, if that is set).
+    Install,
+    /// Remove the hook gca installed.
+    Uninstall,
+    /// What the hook runs: edit the message git is about to use.
+    #[command(hide = true)]
+    Run {
+        file: PathBuf,
+        source: Option<String>,
+        commit: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -161,6 +193,15 @@ enum ConfigCmd {
         #[arg(long)]
         local: bool,
     },
+    /// Which prompt comes first: the type (default) or the subject. Asked
+    /// first, the subject also ranks the types.
+    Order {
+        #[arg(value_parser = ["type-first", "subject-first"])]
+        order: Option<String>,
+        /// Store the setting in this repository only.
+        #[arg(long)]
+        local: bool,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -171,6 +212,13 @@ enum Mode {
     All,
     /// Only the paths given on the command line.
     Paths,
+}
+
+/// Which prompt comes first (gca.order).
+#[derive(Clone, Copy, PartialEq)]
+enum Order {
+    TypeFirst,
+    SubjectFirst,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -204,6 +252,21 @@ fn main() -> ExitCode {
             clap_complete::generate(*shell, &mut Cli::command(), "gca", &mut std::io::stdout());
             Ok(ExitCode::SUCCESS)
         }
+        Some(Cmd::Hook { action }) => match action {
+            HookCmd::Install => git::ensure_work_tree()
+                .and_then(|_| hook::install())
+                .map(|_| ExitCode::SUCCESS),
+            HookCmd::Uninstall => git::ensure_work_tree()
+                .and_then(|_| hook::uninstall())
+                .map(|_| ExitCode::SUCCESS),
+            HookCmd::Run { file, source, .. } => {
+                // A hook that fails would stop the commit; say why and let it through.
+                if let Err(e) = hook_run(file, source.as_deref()) {
+                    eprintln!("gca hook: {e:#}");
+                }
+                Ok(ExitCode::SUCCESS)
+            }
+        },
         None => commit_flow(&cli),
     };
     match result {
@@ -241,13 +304,25 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
     if let Some(op) = git::operation_in_progress()? {
         bail!("a {op} is in progress; conclude it with `git commit` (or abort it) first");
     }
-    // Settle the push setting first, so a bad value stops before anything
-    // is staged or committed.
-    let push_mode = if cli.dry_run {
-        PushMode::Never
+    // Settle the settings first, so a bad value stops before anything is
+    // staged or committed.
+    let (push_mode, order) = if cli.dry_run {
+        (PushMode::Never, Order::TypeFirst)
     } else {
-        push_mode(cli)?
+        (push_mode(cli)?, prompt_order()?)
     };
+    let rules = project_rules();
+    if let Some(kind) = cli.kind.as_deref().filter(|k| !rules.allows(k)) {
+        Cli::command()
+            .error(
+                clap::error::ErrorKind::InvalidValue,
+                format!(
+                    "unknown type {kind:?}; the types are {}",
+                    rules.type_list().join(", ")
+                ),
+            )
+            .exit();
+    }
     let mode = if cli.all {
         Mode::All
     } else if cli.paths.is_empty() {
@@ -262,13 +337,43 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
     };
 
     let model = load_model(cli.model.as_deref())?;
-    let (ranked, preselect) = rank(&model, &change, cli.topk.into())?;
+    let drafted = draft::draft(&change.files, &change.diff);
+    // The subject, when it is known before the type: -m, or else the draft.
+    let subject = cli
+        .message
+        .first()
+        .map(|m| m.trim())
+        .filter(|m| !m.is_empty())
+        .or(drafted.as_ref().map(|d| d.subject.as_str()));
+    let log = git::recent_log(history::DEPTH);
+    let habits = history::type_counts(&log);
+    let Ranking {
+        types: ranked,
+        preselect,
+        with_subject,
+        with_history,
+    } = rank(
+        &model,
+        &change,
+        drafted.as_ref(),
+        subject,
+        &habits,
+        &rules,
+        cli.topk.into(),
+    )?;
     let paths: Vec<String> = change.files.iter().map(|f| f.path.clone()).collect();
-    let hint = history::scope_hint(&git::recent_log(history::DEPTH), &paths);
+    let hint = history::scope_hint(&log, &paths);
 
     if cli.dry_run {
         if cli.json {
-            print_json(&change, &ranked, preselect, &hint)?;
+            let extras = JsonExtras {
+                hint: &hint,
+                drafted: drafted.as_ref(),
+                ranked_with_subject: subject.filter(|_| with_subject),
+                ranked_with_history: with_history,
+                rules: &rules,
+            };
+            print_json(&change, &ranked, preselect, &extras)?;
         } else {
             print!("{}", summary(&change));
             for (i, (label, p)) in ranked.iter().enumerate() {
@@ -277,6 +382,9 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
             }
             if let Some(scope) = &hint.suggestion {
                 println!("scope: {scope}");
+            }
+            if let Some(d) = &drafted {
+                println!("subject: {}", d.subject);
             }
         }
         return Ok(ExitCode::SUCCESS);
@@ -313,11 +421,49 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
         eprint!("{}", summary(&change));
     }
     let theme = theme();
+    let draft_subject = drafted.as_ref().map(|d| d.subject.as_str());
+
+    // Subject first: ask for it, then rank the types with it.
+    let mut typed_subject = None;
+    let (ranked, preselect) = if order == Order::SubjectFirst && ask_subject {
+        // The type and scope are not chosen yet; the shortest header they
+        // could make must fit, and a longer one is caught below.
+        let shortest = cli.kind.as_deref().unwrap_or_else(|| {
+            let types = rules.type_list();
+            types.into_iter().min_by_key(|t| t.len()).unwrap_or("ci")
+        });
+        let scope_given = cli
+            .scope
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let subject = prompt_subject(
+            &*theme,
+            "Subject",
+            draft_subject,
+            None,
+            rules.header_max(),
+            |s| message::header(shortest, scope_given, cli.breaking, s),
+        )?;
+        let ranking = rank(
+            &model,
+            &change,
+            drafted.as_ref(),
+            Some(&subject),
+            &habits,
+            &rules,
+            cli.topk.into(),
+        )?;
+        typed_subject = Some(subject);
+        (ranking.types, ranking.preselect)
+    } else {
+        (ranked, preselect)
+    };
 
     let kind = match &cli.kind {
         Some(k) => k.clone(),
         None if cli.yes => ranked[preselect].0.to_string(),
-        None => match choose_type(&*theme, &ranked, preselect)? {
+        None => match choose_type(&*theme, &ranked, preselect, &rules)? {
             Some(k) => k,
             None => return Ok(aborted()),
         },
@@ -341,25 +487,47 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
     let (subject, body) = match cli.message.split_first() {
         Some((first, rest)) => (first.trim().to_string(), body_paragraphs(rest)),
         None => {
-            let prefix = message::header(&kind, scope.as_deref(), cli.breaking, "");
-            let subject: String = Input::with_theme(&*theme)
-                .with_prompt(prefix.trim_end())
-                .validate_with(|s: &String| -> Result<(), String> {
-                    message::check_subject(s)?;
-                    message::check_header_len(&message::header(
-                        &kind,
-                        scope.as_deref(),
-                        cli.breaking,
-                        s,
-                    ))
-                })
-                .interact_text()?;
-            (subject.trim().to_string(), Vec::new())
+            let header_for = |s: &str| message::header(&kind, scope.as_deref(), cli.breaking, s);
+            let prefix = header_for("");
+            let subject = match typed_subject {
+                Some(s)
+                    if message::check_header_len(&header_for(&s), rules.header_max()).is_ok() =>
+                {
+                    s
+                }
+                Some(s) => {
+                    eprintln!(
+                        "{}",
+                        style(format!(
+                            "with this type and scope the header is over {} characters; shorten the subject",
+                            rules.header_max()
+                        ))
+                        .yellow()
+                    );
+                    prompt_subject(
+                        &*theme,
+                        prompt_label(&prefix),
+                        None,
+                        Some(&s),
+                        rules.header_max(),
+                        header_for,
+                    )?
+                }
+                None => prompt_subject(
+                    &*theme,
+                    prompt_label(&prefix),
+                    draft_subject,
+                    None,
+                    rules.header_max(),
+                    header_for,
+                )?,
+            };
+            (subject, Vec::new())
         }
     };
     message::check_subject(&subject).map_err(anyhow::Error::msg)?;
     let header = message::header(&kind, scope.as_deref(), cli.breaking, &subject);
-    message::check_header_len(&header).map_err(anyhow::Error::msg)?;
+    message::check_header_len(&header, rules.header_max()).map_err(anyhow::Error::msg)?;
 
     if INTERRUPTED.load(Ordering::SeqCst) {
         return Ok(interrupted());
@@ -424,7 +592,7 @@ fn read_change(mode: Mode, paths: &[String]) -> Result<Option<Change>> {
     let index = scratch.as_ref().map(git::ScratchIndex::path);
     match (mode, index) {
         (Mode::All, Some(index)) => git::add_tracked(index)?,
-        (Mode::Paths, _) => git::add_paths(index, paths)?,
+        (Mode::Paths, _) => git::add_paths(index, paths).map_err(|e| unmatched_path(e, paths))?,
         _ => {}
     }
     let diff = git::staged_diff(index, paths)?;
@@ -438,6 +606,75 @@ fn read_change(mode: Mode, paths: &[String]) -> Result<Option<Change>> {
     }))
 }
 
+/// `gca hook run`: put the suggested `type(scope): ` in front of the
+/// message git is about to use, as `gca -y` would choose it.
+fn hook_run(file: &Path, source: Option<&str>) -> Result<()> {
+    let Some(source) = hook::Source::from_git(source) else {
+        return Ok(());
+    };
+    if std::env::var("GCA_HOOK").is_ok_and(|v| matches!(v.trim(), "0" | "off" | "false" | "no")) {
+        return Ok(());
+    }
+    let text = std::fs::read_to_string(file)
+        .with_context(|| format!("could not read {}", file.display()))?;
+    let first = text.lines().next().unwrap_or("").trim();
+    if hook::keeps(first)
+        || (source == hook::Source::Message && first.is_empty())
+        || git::replaying()?
+    {
+        return Ok(());
+    }
+    let Some(change) = read_change(Mode::Staged, &[])? else {
+        return Ok(());
+    };
+    let model = load_model(None)?;
+    let drafted = draft::draft(&change.files, &change.diff);
+    let draft_subject = drafted.as_ref().map(|d| d.subject.as_str());
+    let subject = match source {
+        hook::Source::Message => Some(first),
+        hook::Source::Editor => draft_subject,
+    };
+    let log = git::recent_log(history::DEPTH);
+    let habits = history::type_counts(&log);
+    let rules = project_rules();
+    let ranking = rank(
+        &model,
+        &change,
+        drafted.as_ref(),
+        subject,
+        &habits,
+        &rules,
+        3,
+    )?;
+    let paths: Vec<String> = change.files.iter().map(|f| f.path.clone()).collect();
+    let hint = history::scope_hint(&log, &paths);
+    let scope = hint.suggestion.filter(|_| hint.repo_uses_scopes);
+    let kind = ranking.types[ranking.preselect].0;
+    let prefix = message::header(kind, scope.as_deref(), false, "");
+    let note = (source == hook::Source::Editor && hook::comments_are_stripped())
+        .then(|| hook::note(&ranking.types));
+    if let Some(edited) = hook::edit(&text, source, &prefix, draft_subject, note.as_deref()) {
+        std::fs::write(file, edited)
+            .with_context(|| format!("could not write {}", file.display()))?;
+    }
+    Ok(())
+}
+
+/// Arguments are paths unless they name a command, so a mistyped command, or
+/// one an older gca lacks, reaches git as a path; say that plainly.
+fn unmatched_path(e: anyhow::Error, paths: &[String]) -> anyhow::Error {
+    let text = format!("{e:#}");
+    match paths
+        .iter()
+        .find(|p| text.contains(&format!("pathspec '{p}' did not match")))
+    {
+        Some(p) => anyhow::anyhow!(
+            "no file matches {p:?}; gca's commands are config, completions and hook (see gca --help)"
+        ),
+        None => e,
+    }
+}
+
 fn load_model(path: Option<&Path>) -> Result<Model> {
     match path {
         Some(p) => Model::load(p).with_context(|| format!("could not load {}", p.display())),
@@ -445,14 +682,32 @@ fn load_model(path: Option<&Path>) -> Result<Model> {
     }
 }
 
-/// Top suggestions and which one to pre-select. A path rule (docs, test, ci)
-/// is pre-selected even when the model ranks it lower, as long as the model
+struct Ranking<'m> {
+    /// The top suggestions and their probabilities.
+    types: Vec<(&'m str, f64)>,
+    /// Which one to pre-select.
+    preselect: usize,
+    /// Whether the subject was taken into account.
+    with_subject: bool,
+    /// How many of the project's recent typed commits were taken into account.
+    with_history: usize,
+}
+
+/// A known subject's model is combined with the diff model's, the result is
+/// tilted toward the types the project itself uses, and types its commitlint
+/// config does not allow drop out. A path rule
+/// (docs, test, ci) or the type a subject draft implies (a release is
+/// `chore`) is pre-selected even when ranked lower, as long as the model
 /// knows that type.
 fn rank<'m>(
     model: &'m Model,
     change: &Change,
+    drafted: Option<&Draft>,
+    subject: Option<&str>,
+    habits: &HashMap<String, usize>,
+    rules: &'m Rules,
     topk: usize,
-) -> Result<(Vec<(&'m str, f64)>, usize)> {
+) -> Result<Ranking<'m>> {
     let diff: String = change.diff.chars().take(MAX_DIFF_CHARS).collect();
     let s = &change.stats;
     let numeric = [
@@ -461,13 +716,58 @@ fn rank<'m>(
         s.deletions as f64,
         s.additions as f64 / (s.deletions as f64 + 1.0),
     ];
-    let probs = model
+    let mut probs = model
         .predict_proba(&model.build_features(&diff, numeric))
         .context("model inference failed")?;
-    let mut ranked = model.topk(&probs, topk);
+    let mut with_subject = false;
+    if let Some(subject) = subject {
+        let subjects = SubjectModel::embedded().context("the built-in subject model is invalid")?;
+        if let Some(combined) = subjects.combine(&model.payload.classes, &probs, subject) {
+            probs = combined;
+            with_subject = true;
+        }
+    }
+    let weight = if with_subject {
+        history::HABIT_WEIGHT_WITH_SUBJECT
+    } else {
+        history::HABIT_WEIGHT
+    };
+    let mut with_history = 0;
+    if let Some(tilted) = history::weigh_by_habits(&model.payload.classes, &probs, habits, weight) {
+        probs = tilted;
+        with_history = habits.values().sum();
+    }
+    // Types the project's commitlint config does not allow drop out.
+    if rules.types.is_some() {
+        for (p, class) in probs.iter_mut().zip(&model.payload.classes) {
+            if !rules.allows(class) {
+                *p = 0.0;
+            }
+        }
+        let total: f64 = probs.iter().sum();
+        if total > 0.0 {
+            probs.iter_mut().for_each(|p| *p /= total);
+        }
+    }
+    let mut ranked: Vec<(&'m str, f64)> = model
+        .topk(&probs, topk)
+        .into_iter()
+        .filter(|(label, _)| rules.allows(label))
+        .collect();
+    if ranked.is_empty() {
+        // The project's types are all unknown to the model: list them as they are.
+        ranked = rules
+            .type_list()
+            .into_iter()
+            .take(topk)
+            .map(|t| (t, 0.0))
+            .collect();
+    }
     let paths: Vec<String> = change.files.iter().map(|f| f.path.clone()).collect();
     let rule = heuristics::classify(&paths)
-        .filter(|label| model.payload.classes.iter().any(|class| class == label));
+        .or_else(|| drafted.and_then(|d| d.kind))
+        .filter(|label| model.payload.classes.iter().any(|class| class == label))
+        .filter(|label| rules.allows(label));
     let preselect = match rule {
         None => 0,
         Some(hit) => ranked
@@ -478,7 +778,12 @@ fn rank<'m>(
                 ranked.len() - 1
             }),
     };
-    Ok((ranked, preselect))
+    Ok(Ranking {
+        types: ranked,
+        preselect,
+        with_subject,
+        with_history,
+    })
 }
 
 /// The ranked types, plus "other type" for the rest. `None` if cancelled.
@@ -486,10 +791,11 @@ fn choose_type(
     theme: &dyn Theme,
     ranked: &[(&str, f64)],
     preselect: usize,
+    rules: &Rules,
 ) -> Result<Option<String>> {
-    let others: Vec<&str> = message::TYPES
-        .iter()
-        .copied()
+    let others: Vec<&str> = rules
+        .type_list()
+        .into_iter()
         .filter(|t| !ranked.iter().any(|(l, _)| l == t))
         .collect();
     let mut items: Vec<String> = ranked
@@ -558,16 +864,38 @@ fn summary(change: &Change) -> String {
     out
 }
 
+/// What the dry run's JSON reports besides the change and the ranking.
+struct JsonExtras<'a> {
+    hint: &'a ScopeHint,
+    drafted: Option<&'a Draft>,
+    ranked_with_subject: Option<&'a str>,
+    ranked_with_history: usize,
+    rules: &'a Rules,
+}
+
 fn print_json(
     change: &Change,
     ranked: &[(&str, f64)],
     preselect: usize,
-    hint: &ScopeHint,
+    extras: &JsonExtras,
 ) -> Result<()> {
+    let JsonExtras {
+        hint,
+        drafted,
+        ranked_with_subject,
+        ranked_with_history,
+        rules,
+    } = extras;
     let files: Vec<_> = change
         .files
         .iter()
-        .map(|f| serde_json::json!({ "status": f.status.to_string(), "path": f.path }))
+        .map(|f| {
+            let mut entry = serde_json::json!({ "status": f.status.to_string(), "path": f.path });
+            if let Some(old) = &f.old_path {
+                entry["from"] = old.as_str().into();
+            }
+            entry
+        })
         .collect();
     let suggestions: Vec<_> = ranked
         .iter()
@@ -581,6 +909,14 @@ fn print_json(
         "preselected": ranked[preselect].0,
         "scope": hint.suggestion,
         "repo_uses_scopes": hint.repo_uses_scopes,
+        "subject_draft": drafted.map(|d| d.subject.as_str()),
+        "ranked_with_subject": ranked_with_subject,
+        "ranked_with_history": ranked_with_history,
+        "commitlint": rules.file.as_ref().map(|file| serde_json::json!({
+            "config": file.display().to_string(),
+            "types": rules.types,
+            "header_max_length": rules.header_max,
+        })),
     });
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
@@ -641,6 +977,35 @@ fn push_mode(cli: &Cli) -> Result<PushMode> {
     })
 }
 
+/// `-t`: any word that can be a type; the project's rules decide the rest.
+fn type_word(word: &str) -> Result<String, String> {
+    if commitlint::is_type(word) {
+        Ok(word.to_string())
+    } else {
+        Err("a type is a lowercase word, such as feat or fix".into())
+    }
+}
+
+/// The project's commitlint rules, found from here up to the top of the
+/// work tree; the defaults without a config.
+fn project_rules() -> Rules {
+    match (std::env::current_dir(), git::toplevel()) {
+        (Ok(cwd), Ok(top)) => commitlint::load(&cwd, &top),
+        _ => Rules::default(),
+    }
+}
+
+fn prompt_order() -> Result<Order> {
+    let value = git::get_config(ORDER_KEY).map(|v| v.to_ascii_lowercase());
+    Ok(match value.as_deref() {
+        None | Some("type-first" | "type") => Order::TypeFirst,
+        Some("subject-first" | "subject") => Order::SubjectFirst,
+        Some(other) => {
+            bail!("invalid {ORDER_KEY} value {other:?}; expected type-first or subject-first")
+        }
+    })
+}
+
 fn config(what: &ConfigCmd) -> Result<ExitCode> {
     let (key, value, local, unset) = match what {
         ConfigCmd::Push { mode, local } => (PUSH_KEY, mode, *local, "never (default)"),
@@ -650,6 +1015,7 @@ fn config(what: &ConfigCmd) -> Result<ExitCode> {
             *local,
             "(not set: the upstream, then origin)",
         ),
+        ConfigCmd::Order { order, local } => (ORDER_KEY, order, *local, "type-first (default)"),
     };
     match value {
         None => {
@@ -690,5 +1056,55 @@ fn theme() -> Box<dyn Theme> {
         Box::new(SimpleTheme)
     } else {
         Box::new(ColorfulTheme::default())
+    }
+}
+
+/// The subject prompt's label: `type(scope):`, which the plain theme follows
+/// with its own ": ".
+fn prompt_label(prefix: &str) -> &str {
+    let prefix = prefix.trim_end();
+    if no_color() {
+        prefix.trim_end_matches(':')
+    } else {
+        prefix
+    }
+}
+
+/// Asks for the subject; `header_for` builds the header it is checked in.
+/// A draft is the default: Enter takes it, typing replaces it, and Tab puts
+/// it on the line to edit. `initial` puts text on the line instead.
+fn prompt_subject(
+    theme: &dyn Theme,
+    label: &str,
+    draft: Option<&str>,
+    initial: Option<&str>,
+    max_header: usize,
+    header_for: impl Fn(&str) -> String,
+) -> Result<String> {
+    let completion = draft.filter(|_| initial.is_none()).map(EditDraft);
+    let mut input = Input::<String>::with_theme(theme).with_prompt(label);
+    if let Some(c) = &completion {
+        input = input.default(c.0.to_string()).completion_with(c);
+    }
+    if let Some(text) = initial {
+        input = input.with_initial_text(text);
+    }
+    let subject = input
+        .validate_with(|s: &String| -> Result<(), String> {
+            message::check_subject(s)?;
+            message::check_header_len(&header_for(s), max_header)
+        })
+        .interact_text()?;
+    Ok(subject.trim().to_string())
+}
+
+/// Tab (or → at the end of an empty line) fills in the subject draft.
+struct EditDraft<'a>(&'a str);
+
+impl Completion for EditDraft<'_> {
+    fn get(&self, input: &str) -> Option<String> {
+        // Only on an empty line: dialoguer redraws from the cursor, which
+        // would be wrong anywhere but the end.
+        input.is_empty().then(|| self.0.to_string())
     }
 }

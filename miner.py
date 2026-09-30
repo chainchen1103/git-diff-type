@@ -196,6 +196,7 @@ DIFF_CONFIG = [
     "-c", "diff.mnemonicPrefix=false",
     "-c", "diff.relative=false",
     "-c", "core.quotePath=true",
+    "-c", "diff.renames=true",
 ]
 DIFF_FLAGS = [
     "--no-color", "--no-ext-diff", "--no-textconv", "--unified=3",

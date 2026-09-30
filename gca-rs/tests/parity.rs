@@ -6,6 +6,9 @@ mod features;
 #[path = "../src/model.rs"]
 #[allow(dead_code)]
 mod model;
+#[path = "../src/subject.rs"]
+#[allow(dead_code)]
+mod subject;
 
 #[derive(Deserialize)]
 struct Case {
@@ -85,5 +88,56 @@ fn check_fixture(m: &model::Model, fixtures_path: &Path) {
         fails, 0,
         "{} class probabilities exceeded tol={}",
         fails, tol
+    );
+}
+
+#[derive(Deserialize)]
+struct SubjectCase {
+    subject: String,
+    diff_probs: Vec<f64>,
+    expected_subject: Vec<f64>,
+    expected_combined: Vec<f64>,
+}
+
+#[derive(Deserialize)]
+struct SubjectFixtures {
+    classes: Vec<String>,
+    cases: Vec<SubjectCase>,
+}
+
+/// The subject model gives what train_subject.py's NumPy forward pass gives,
+/// on raw subjects as they would come from `-m`.
+#[test]
+fn subject_model_parity() {
+    let m = subject::SubjectModel::embedded().expect("load the subject model");
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("subject_fixtures.json");
+    let raw = std::fs::read(&path).expect("read subject fixtures");
+    let fx: SubjectFixtures = serde_json::from_slice(&raw).expect("parse subject fixtures");
+    assert_eq!(fx.classes, m.classes(), "class order mismatch");
+    assert!(fx.cases.len() > 100);
+
+    let mut max_diff = 0.0_f64;
+    for case in &fx.cases {
+        let got = m.predict_proba(&case.subject);
+        let combined = m
+            .combine(&fx.classes, &case.diff_probs, &case.subject)
+            .expect("same classes");
+        for (got, expected) in [
+            (&got, &case.expected_subject),
+            (&combined, &case.expected_combined),
+        ] {
+            assert_eq!(got.len(), expected.len());
+            for (p, e) in got.iter().zip(expected.iter()) {
+                let d = (p - e).abs();
+                max_diff = max_diff.max(d);
+                assert!(d < 1e-9, "{:?}: rust={p} py={e}", case.subject);
+            }
+        }
+    }
+    eprintln!(
+        "subject fixtures: max abs diff across {} cases: {max_diff:.3e}",
+        fx.cases.len()
     );
 }
