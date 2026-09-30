@@ -44,6 +44,8 @@
   addition, and its whole content went to the model as changed lines. gca and
   the miner now pin rename detection like the other diff settings.
 - With `NO_COLOR` set, the subject prompt showed two colons (`fix::`).
+- A mistyped command such as `gca hooks install` showed git's pathspec
+  error; gca now says no file matches `hooks` and lists its commands.
 
 ## 0.2.0 (2026-09-30)
 

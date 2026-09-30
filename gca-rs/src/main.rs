@@ -537,7 +537,7 @@ fn read_change(mode: Mode, paths: &[String]) -> Result<Option<Change>> {
     let index = scratch.as_ref().map(git::ScratchIndex::path);
     match (mode, index) {
         (Mode::All, Some(index)) => git::add_tracked(index)?,
-        (Mode::Paths, _) => git::add_paths(index, paths)?,
+        (Mode::Paths, _) => git::add_paths(index, paths).map_err(|e| unmatched_path(e, paths))?,
         _ => {}
     }
     let diff = git::staged_diff(index, paths)?;
@@ -592,6 +592,21 @@ fn hook_run(file: &Path, source: Option<&str>) -> Result<()> {
             .with_context(|| format!("could not write {}", file.display()))?;
     }
     Ok(())
+}
+
+/// Arguments are paths unless they name a command, so a mistyped command, or
+/// one an older gca lacks, reaches git as a path; say that plainly.
+fn unmatched_path(e: anyhow::Error, paths: &[String]) -> anyhow::Error {
+    let text = format!("{e:#}");
+    match paths
+        .iter()
+        .find(|p| text.contains(&format!("pathspec '{p}' did not match")))
+    {
+        Some(p) => anyhow::anyhow!(
+            "no file matches {p:?}; gca's commands are config, completions and hook (see gca --help)"
+        ),
+        None => e,
+    }
 }
 
 fn load_model(path: Option<&Path>) -> Result<Model> {

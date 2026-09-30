@@ -155,6 +155,17 @@ fn all_and_paths_conflict() {
 }
 
 #[test]
+fn an_unknown_command_is_reported_as_a_missing_path() {
+    let repo = Repo::new();
+    let out = repo.gca(&["hooks", "install"]);
+    assert_eq!(out.status.code(), Some(1));
+    let err = stderr(&out);
+    assert!(err.contains("no file matches \"hooks\""), "{err}");
+    assert!(err.contains("gca --help"), "{err}");
+    assert_eq!(repo.commit_count(), 1);
+}
+
+#[test]
 fn paths_commit_only_those_and_keep_other_staged_work() {
     let repo = Repo::new();
     repo.write("README.md", "# demo\n\nmore\n");
