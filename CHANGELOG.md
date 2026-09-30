@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 (2026-09-30)
+
+The type is ranked with more than the diff: the subject when it is known and
+the types the project uses. gca also works through plain `git commit`,
+follows commitlint configs and drafts the subject of mechanical changes.
 
 ### Added
 
