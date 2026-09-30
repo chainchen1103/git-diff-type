@@ -15,6 +15,8 @@ use crate::message;
 pub const DEPTH: usize = 500;
 
 pub struct LogEntry {
+    pub sha: String,
+    /// `Name <email>`
     pub author: String,
     pub subject: String,
     pub files: Vec<String>,
@@ -142,16 +144,7 @@ pub fn weigh_by_habits(
     weight: f64,
     pseudo: f64,
 ) -> Option<Vec<f64>> {
-    let total_train: f64 = TRAINING_MIX.iter().map(|(_, n)| n).sum();
-    let prior: Vec<f64> = classes
-        .iter()
-        .map(|c| {
-            TRAINING_MIX
-                .iter()
-                .find(|(kind, _)| kind == c)
-                .map(|(_, n)| n / total_train)
-        })
-        .collect::<Option<_>>()?;
+    let prior = training_prior(classes)?;
     let n: Vec<f64> = classes
         .iter()
         .map(|c| counts.get(c).copied().unwrap_or(0) as f64)
@@ -167,6 +160,99 @@ pub fn weigh_by_habits(
         .map(|((p, n), pi)| {
             let q = (n + pseudo * pi) / (total + pseudo);
             (p + 1e-12).ln() + weight * (q / pi).ln()
+        })
+        .collect();
+    Some(crate::subject::softmax(&scores))
+}
+
+/// The training mix of the given types; `None` if it lacks one of them.
+fn training_prior(classes: &[String]) -> Option<Vec<f64>> {
+    let total: f64 = TRAINING_MIX.iter().map(|(_, n)| n).sum();
+    classes
+        .iter()
+        .map(|c| {
+            TRAINING_MIX
+                .iter()
+                .find(|(kind, _)| kind == c)
+                .map(|(_, n)| n / total)
+        })
+        .collect()
+}
+
+/// Your own recent commits against what gca would have suggested for them:
+/// how many it reads again, how much the comparison counts without and with
+/// a known subject, and how many commits' worth of the training mix smooths
+/// it. Chosen on projects held out from training (eval/tune_history.py).
+pub const OWN_COMMITS: usize = 10;
+pub const OWN_WEIGHT: f64 = 0.1;
+pub const OWN_WEIGHT_WITH_SUBJECT: f64 = 0.15;
+pub const OWN_PSEUDO_COMMITS: f64 = 1.0;
+
+/// The latest commits by `me` (`Name <email>`, the same email or name) with
+/// a type the model knows, newest first, at most OWN_COMMITS, with the type.
+pub fn own_commits<'a>(
+    log: &'a [LogEntry],
+    me: &str,
+    classes: &[String],
+) -> Vec<(&'a LogEntry, &'a str)> {
+    log.iter()
+        .filter(|e| same_person(&e.author, me))
+        .filter_map(|e| {
+            let (kind, _) = message::parse_subject(&e.subject)?;
+            classes.iter().any(|c| c == kind).then_some((e, kind))
+        })
+        .take(OWN_COMMITS)
+        .collect()
+}
+
+fn same_person(a: &str, b: &str) -> bool {
+    let split = |ident: &str| -> (String, String) {
+        match ident.rsplit_once('<') {
+            Some((name, email)) => (
+                name.trim().to_string(),
+                email.trim_end_matches('>').trim().to_lowercase(),
+            ),
+            None => (ident.trim().to_string(), String::new()),
+        }
+    };
+    let ((a_name, a_email), (b_name, b_email)) = (split(a), split(b));
+    (!a_email.is_empty() && a_email == b_email) || (!a_name.is_empty() && a_name == b_name)
+}
+
+/// `p ∝ p · ((chosen + s·π) / (shown + s·π))^weight`: for each type, how
+/// many of your recent commits you gave it against how much probability gca
+/// would have shown it for them, both smoothed toward the training mix π
+/// with `pseudo` commits' worth of it. A type you choose more often than
+/// gca suggests it rises. `None` without such commits, or for a model with
+/// types the training mix does not have.
+pub fn weigh_by_own_choices(
+    classes: &[String],
+    probs: &[f64],
+    chosen: &[&str],
+    shown: &[Vec<f64>],
+    weight: f64,
+    pseudo: f64,
+) -> Option<Vec<f64>> {
+    let prior = training_prior(classes)?;
+    if chosen.is_empty() || chosen.len() != shown.len() || probs.len() != classes.len() {
+        return None;
+    }
+    let mut observed = vec![0.0; classes.len()];
+    let mut expected = vec![0.0; classes.len()];
+    for (kind, probs) in chosen.iter().zip(shown) {
+        let j = classes.iter().position(|c| c == kind)?;
+        observed[j] += 1.0;
+        if probs.len() != classes.len() {
+            return None;
+        }
+        expected.iter_mut().zip(probs).for_each(|(e, p)| *e += p);
+    }
+    let scores: Vec<f64> = probs
+        .iter()
+        .zip(observed.iter().zip(&expected))
+        .zip(&prior)
+        .map(|((p, (o, e)), pi)| {
+            (p + 1e-12).ln() + weight * ((o + pseudo * pi) / (e + pseudo * pi)).ln()
         })
         .collect();
     Some(crate::subject::softmax(&scores))
@@ -190,6 +276,7 @@ mod tests {
 
     fn entry(subject: &str, files: &[&str]) -> LogEntry {
         LogEntry {
+            sha: String::new(),
             author: "Ada <ada@example.com>".into(),
             subject: subject.into(),
             files: files.iter().map(|f| f.to_string()).collect(),
@@ -202,6 +289,7 @@ mod tests {
 
     fn by(author: &str, subject: &str) -> LogEntry {
         LogEntry {
+            sha: String::new(),
             author: author.into(),
             subject: subject.into(),
             files: vec![],
@@ -342,6 +430,7 @@ mod tests {
     fn bots_do_not_count() {
         let mut log: Vec<_> = (0..20)
             .map(|i| LogEntry {
+                sha: String::new(),
                 author: "renovate[bot] <bot@renovateapp.com>".into(),
                 subject: format!("chore: update dependency x to v{i}"),
                 files: vec!["package.json".into()],
@@ -371,5 +460,73 @@ mod tests {
         let hint = scope_hint(&log, &staged(&["README.md"]));
         assert!(hint.repo_uses_scopes);
         assert_eq!(hint.suggestion, None);
+    }
+
+    #[test]
+    fn own_commits_are_found_by_email_or_name() {
+        let classes: Vec<String> = TRAINING_MIX.iter().map(|(k, _)| k.to_string()).collect();
+        let log = [
+            by("Ada <ADA@x.org>", "fix: newest"),
+            by("Bo <bo@x.org>", "feat: not mine"),
+            by("Ada Lovelace <ada@x.org>", "WIP: untyped"),
+            by(
+                "Ada Lovelace <ada@x.org>",
+                "deps: a type the model does not know",
+            ),
+            by("Ada Lovelace <other@y.org>", "docs: same name, other email"),
+            by("Ada Lovelace <ada@x.org>", "perf: oldest"),
+        ];
+        let mine = own_commits(&log, "Ada Lovelace <ada@x.org>", &classes);
+        let kinds: Vec<&str> = mine.iter().map(|(_, k)| *k).collect();
+        assert_eq!(kinds, ["fix", "docs", "perf"]);
+        let many: Vec<LogEntry> = (0..30)
+            .map(|i| by("Ada <ada@x.org>", &format!("fix: {i}")))
+            .collect();
+        assert_eq!(
+            own_commits(&many, "Ada <ada@x.org>", &classes).len(),
+            OWN_COMMITS
+        );
+        assert!(own_commits(&log, "Cy <cy@x.org>", &classes).is_empty());
+    }
+
+    #[test]
+    fn own_choices_lift_the_types_chosen_more_often_than_shown() {
+        let classes: Vec<String> = TRAINING_MIX.iter().map(|(k, _)| k.to_string()).collect();
+        let at = |p: &[f64], k: &str| p[classes.iter().position(|c| c == k).unwrap()];
+        let one_hot = |k: &str| -> Vec<f64> {
+            classes
+                .iter()
+                .map(|c| if c == k { 1.0 } else { 0.0 })
+                .collect()
+        };
+        let flat = vec![1.0 / classes.len() as f64; classes.len()];
+        assert!(weigh_by_own_choices(&classes, &flat, &[], &[], 0.1, 1.0).is_none());
+        // gca would have shown exactly what was chosen: nothing to learn
+        let kept = weigh_by_own_choices(
+            &classes,
+            &flat,
+            &["fix", "docs"],
+            &[one_hot("fix"), one_hot("docs")],
+            0.1,
+            1.0,
+        )
+        .unwrap();
+        for p in &kept {
+            assert!((p - flat[0]).abs() < 1e-9, "{kept:?}");
+        }
+        // gca kept saying fix, and chore was chosen
+        let shown = vec![one_hot("fix"); 5];
+        let tilted =
+            weigh_by_own_choices(&classes, &flat, &["chore"; 5], &shown, 0.1, 1.0).unwrap();
+        assert!(
+            at(&tilted, "chore") > at(&tilted, "feat") && at(&tilted, "feat") > at(&tilted, "fix")
+        );
+        assert!((tilted.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+        // a model with other types is left alone
+        let other = vec!["feat".to_string(), "wip".to_string()];
+        assert!(
+            weigh_by_own_choices(&other, &[0.5, 0.5], &["feat"], &[vec![0.5, 0.5]], 0.1, 1.0)
+                .is_none()
+        );
     }
 }

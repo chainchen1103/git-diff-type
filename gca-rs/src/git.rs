@@ -2,6 +2,7 @@
 //! push inherit the terminal so hooks, editors and credential prompts work.
 
 use anyhow::{anyhow, bail, Context, Result};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -327,11 +328,13 @@ pub fn recent_log(depth: usize) -> Vec<LogEntry> {
         "core.quotePath=false",
         "-c",
         "diff.relative=false",
+        "-c",
+        "log.showSignature=false",
         "log",
         "--no-merges",
         "-n",
         &n,
-        "--format=%x1e%an <%ae>%x1f%s",
+        "--format=%x1e%H%x1f%an <%ae>%x1f%s",
         "--name-only",
     ];
     run(None, &args)
@@ -343,7 +346,8 @@ fn parse_log(out: &str) -> Vec<LogEntry> {
     out.split('\x1e')
         .filter_map(|record| {
             let mut lines = record.lines();
-            let (author, subject) = lines.next()?.split_once('\x1f')?;
+            let mut header = lines.next()?.splitn(3, '\x1f');
+            let (sha, author, subject) = (header.next()?, header.next()?, header.next()?);
             let subject = subject.trim();
             if subject.is_empty() {
                 return None;
@@ -354,12 +358,164 @@ fn parse_log(out: &str) -> Vec<LogEntry> {
                 .map(String::from)
                 .collect();
             Some(LogEntry {
+                sha: sha.to_string(),
                 author: author.to_string(),
                 subject: subject.to_string(),
                 files,
             })
         })
         .collect()
+}
+
+/// Who the next commit will be by, as `Name <email>`: user.name and
+/// user.email, or GIT_AUTHOR_NAME and GIT_AUTHOR_EMAIL. `None` when git
+/// knows no identity.
+pub fn author_ident() -> Option<String> {
+    let out = run(None, &["var", "GIT_AUTHOR_IDENT"]).ok()?;
+    // Name <email> 1727680000 +0800
+    let end = out.rfind('>')?;
+    Some(out[..=end].trim().to_string())
+}
+
+/// A commit's change as the model reads it: the patch, cut at `max_chars`
+/// as the training data was, and its line counts.
+pub struct CommitChange {
+    pub diff: String,
+    pub stats: Stats,
+}
+
+/// The changes the given commits made, keyed by hash. Commits at the edge of
+/// a shallow clone are left out: git shows them as adding every file.
+pub fn commit_changes(shas: &[&str], max_chars: usize) -> Result<HashMap<String, CommitChange>> {
+    let shallow: Vec<String> = git_path("shallow")
+        .ok()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .map(|s| s.lines().map(|l| l.trim().to_string()).collect())
+        .unwrap_or_default();
+    let shas: Vec<&str> = shas
+        .iter()
+        .copied()
+        .filter(|s| !shallow.iter().any(|b| b == s))
+        .collect();
+    if shas.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let mut args = DIFF_CONFIG.to_vec();
+    args.extend([
+        "-c",
+        "log.showSignature=false",
+        "show",
+        "--format=%x1e%H",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--unified=3",
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+        "--output-indicator-new=+",
+        "--output-indicator-old=-",
+        "--output-indicator-context= ",
+    ]);
+    args.extend(&shas);
+    let mut child = git(None)
+        .args(&args)
+        // In a partial clone, fail rather than download the old contents.
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| anyhow!("could not run git: {e}"))?;
+    let stdout = child.stdout.take().context("no output from git show")?;
+    let changes = read_patches(std::io::BufReader::new(stdout), max_chars);
+    if !child.wait()?.success() {
+        bail!("`git show` failed");
+    }
+    Ok(changes)
+}
+
+/// Each commit's patch, from `\x1e<hash>` lines on. Only the first
+/// `max_chars` (and a margin) of a patch are kept, however large the commit,
+/// and the text is cut as miner.py cuts it. The line counts are those
+/// `--numstat` gives: files, and added and removed lines in the hunks.
+fn read_patches(
+    mut reader: impl std::io::BufRead,
+    max_chars: usize,
+) -> HashMap<String, CommitChange> {
+    struct Reading {
+        sha: String,
+        text: String,
+        chars: usize,
+        stats: Stats,
+        in_hunk: bool,
+    }
+    let finish = |r: Reading| {
+        let diff = cut(&r.text, max_chars);
+        (
+            r.sha,
+            CommitChange {
+                diff,
+                stats: r.stats,
+            },
+        )
+    };
+    let keep = max_chars + 1000;
+    let mut changes = HashMap::new();
+    let mut current: Option<Reading> = None;
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {}
+        }
+        if let Some(sha) = line.strip_prefix(b"\x1e") {
+            if let Some(done) = current.take() {
+                let (sha, change) = finish(done);
+                changes.insert(sha, change);
+            }
+            current = Some(Reading {
+                sha: String::from_utf8_lossy(sha).trim().to_string(),
+                text: String::new(),
+                chars: 0,
+                stats: Stats {
+                    files_changed: 0,
+                    additions: 0,
+                    deletions: 0,
+                },
+                in_hunk: false,
+            });
+            continue;
+        }
+        let Some(r) = current.as_mut() else {
+            continue;
+        };
+        if line.starts_with(b"diff --git ") {
+            r.stats.files_changed += 1;
+            r.in_hunk = false;
+        } else if line.starts_with(b"@@") {
+            r.in_hunk = true;
+        } else if r.in_hunk {
+            match line.first() {
+                Some(b'+') => r.stats.additions += 1,
+                Some(b'-') => r.stats.deletions += 1,
+                _ => {}
+            }
+        }
+        if r.chars <= keep {
+            let text = String::from_utf8_lossy(&line);
+            r.chars += text.chars().count();
+            r.text.push_str(&text);
+        }
+    }
+    if let Some(done) = current {
+        let (sha, change) = finish(done);
+        changes.insert(sha, change);
+    }
+    changes
+}
+
+fn cut(text: &str, max_chars: usize) -> String {
+    text.trim().chars().take(max_chars).collect()
 }
 
 pub struct CommitRequest<'a> {
@@ -529,13 +685,38 @@ mod tests {
 
     #[test]
     fn log_records() {
-        let out = "\x1eAda <a@x>\x1ffeat(cli): add -a\n\nsrc/main.rs\nREADME.md\n\x1eBo <b@x>\x1fdocs: typo\n\nREADME.md\n\x1eCy <c@x>\x1fempty commit\n";
+        let out = "\x1eaaa\x1fAda <a@x>\x1ffeat(cli): add -a\n\nsrc/main.rs\nREADME.md\n\x1ebbb\x1fBo <b@x>\x1fdocs: typo\n\nREADME.md\n\x1eccc\x1fCy <c@x>\x1fempty commit\n";
         let log = parse_log(out);
         assert_eq!(log.len(), 3);
+        assert_eq!(log[0].sha, "aaa");
         assert_eq!(log[0].author, "Ada <a@x>");
         assert_eq!(log[0].subject, "feat(cli): add -a");
         assert_eq!(log[0].files, ["src/main.rs", "README.md"]);
         assert_eq!(log[1].files, ["README.md"]);
         assert!(log[2].files.is_empty());
+    }
+
+    #[test]
+    fn patches_of_several_commits_are_cut_like_the_training_data() {
+        let long: String = (0..50).map(|i| format!("+line {i}\n")).collect();
+        let out = format!(
+            "\x1eaaa\n\ndiff --git a/f b/f\nnew file mode 100644\n--- /dev/null\n+++ b/f\n@@ -0,0 +1,50 @@\n{long}\
+             \x1ebbb\n\ndiff --git a/g b/h\nsimilarity index 90%\nrename from g\nrename to h\n--- a/g\n+++ b/h\n\
+             @@ -1,3 +1,3 @@\n a\n--b\n+++b\n c\ndiff --git a/i.png b/i.png\nBinary files a/i.png and b/i.png differ\n"
+        );
+        let changes = read_patches(std::io::Cursor::new(out), 40);
+        let a = &changes["aaa"];
+        assert_eq!(a.diff.chars().count(), 40);
+        assert!(a.diff.starts_with("diff --git a/f b/f\nnew file mode"));
+        assert_eq!(
+            (a.stats.files_changed, a.stats.additions, a.stats.deletions),
+            (1, 50, 0)
+        );
+        // "--b" and "+++b" are lines of the file, not headers
+        let b = &changes["bbb"];
+        assert_eq!(
+            (b.stats.files_changed, b.stats.additions, b.stats.deletions),
+            (2, 1, 1)
+        );
     }
 }

@@ -236,6 +236,56 @@ move the ranking less. The file lists come from the stored diffs, which the
 miner cuts at 20,000 characters, so a large commit's later files are missing
 from the simulation; gca reads the full lists from git.
 
+## With your own commits
+
+Last, gca takes the user's latest 10 commits among those 500 (the same email
+or name as `git var GIT_AUTHOR_IDENT`), reads each again with the models
+(the diff model, and the subject model too when the ranking has a subject),
+and compares:
+
+    p ∝ p · ((chosen + prior) / (shown + prior))^weight
+
+where chosen counts the types the user gave those commits and shown sums the
+probabilities the models give them, both smoothed with one commit's worth of
+the training mix. A type the user chose more often than the models
+suggested it rises. The simulation lets each commit's author stand for the
+user: the models read the author's latest 10 commits among the 500 before
+it. `gca-rs` reads those commits' patches as the miner does, cut at 20,000
+characters and with the same line counts.
+
+On the six held-out training projects, with the weights above for the
+project's mix and the same files (85.3% of these commits have earlier
+commits by their author):
+
+| Weight | Diff | Diff and subject |
+| ---: | ---: | ---: |
+| none | 53.4% / 89.2% / 44.5% | 64.7% / 93.0% / 50.6% |
+| 0.05 | 56.6% / 90.8% / 44.5% | 65.9% / 93.5% / 50.3% |
+| 0.1 | **57.2% / 91.0% / 44.0%** | 66.3% / 93.7% / 50.1% |
+| 0.15 | 56.6% / 90.8% / 42.9% | **66.3% / 93.7% / 49.3%** |
+| 0.2 | 56.1% / 90.3% / 41.9% | 66.1% / 93.5% / 48.7% |
+| 0.25 | 55.2% / 90.0% / 40.6% | 65.5% / 93.2% / 47.8% |
+| 0.3 | 54.6% / 89.5% / 40.0% | 64.8% / 92.9% / 47.2% |
+
+The shipped weights are the best first suggestion for each: 0.1 without a
+subject and 0.15 with one (ahead of 0.1 by 0.01 points). Of the latest 5, 10
+or 20 commits, smoothed with 1, 2, 5 or 10 commits' worth, 10 with 1 gives
+the best first suggestion without a subject (20 with 1 ties) and is 0.01
+points short of the best with one (10 with 2). On the test sets, on top of
+the project's mix and the same files (`results_history.json`):
+
+| Set | Diff and history | + own commits | Diff, subject and history | + own commits |
+| --- | ---: | ---: | ---: | ---: |
+| Unseen projects, after training | 55.7% · 91.4% · 53.0% | **62.3% · 92.5% · 54.4%** | 67.8% · 94.2% · 58.5% | **70.2% · 94.6% · 59.2%** |
+| Unseen projects, older history | 54.6% · 90.0% · 42.4% | 60.3% · 91.9% · 43.9% | 64.6% · 93.4% · 50.3% | 67.7% · 94.4% · 50.2% |
+| Training projects, after training | 59.9% · 92.6% · 50.2% | 64.0% · 93.2% · 50.5% | 68.5% · 94.8% · 55.1% | 70.3% · 95.0% · 54.9% |
+
+87.2%, 88.7% and 91.2% of those commits have earlier commits by their author.
+For `test_seen_recent`, the models read the authors' commits in the training
+data again, as the shipped model would read a user's older commits; it was
+trained on them. The datasets name authors, not emails, so the simulation
+matches names.
+
 ## Reproduce
 
 From the repository root, with git and Python 3.11+

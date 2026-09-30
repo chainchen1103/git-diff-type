@@ -17,6 +17,11 @@ own history. You confirm, type the subject line, and gca hands it to
   time. On the 8 of them that the previous version had not seen
   either, its first suggestion is right 45.9% of the time, against
   33.6%.
+- **Learns from the history, stores nothing.** The types the project uses,
+  the ones the files you are committing got, and how your own recent commits
+  differ from what it would have suggested all count. With them, on those
+  10,005 commits, its first suggestion is right **62.3%** of the time
+  instead of 43.5% from the diff alone.
 - **Behaves like git.** Nothing is staged or pushed behind your back; hooks,
   sign-off and your editor work as usual.
 
@@ -339,6 +344,29 @@ a subject, smoothed with 5. A project that uses types the way the training
 data did keeps its ranking, and one without Conventional Commits in its
 history is not affected.
 
+### With your own commits
+
+People have habits too: one files a dependency bump under `build`, another
+under `chore`; one calls most small changes `fix`, another `refactor`. gca
+takes your latest 10 commits among those 500 (the ones with your git email or
+name), reads each again with its models, and compares what it would have
+suggested with the type you gave it. A type you chose more often than it
+suggested rises, and one you chose less often sinks. It reads them from the
+history every time, so there is nothing to set up and nothing is stored.
+Scored with each test commit's author standing for you, on top of the
+project's history:
+
+| Test set | Diff and history | + your commits | Diff, subject and history | + your commits |
+| --- | ---: | ---: | ---: | ---: |
+| **Projects never seen**, after training | 55.7% · 91.4% · 53.0% | **62.3% · 92.5% · 54.4%** | 67.8% · 94.2% · 58.5% | **70.2% · 94.6% · 59.2%** |
+| Projects never seen, older history | 54.6% · 90.0% · 42.4% | 60.3% · 91.9% · 43.9% | 64.6% · 93.4% · 50.3% | 67.7% · 94.4% · 50.2% |
+| Projects seen in training, after training | 59.9% · 92.6% · 50.2% | 64.0% · 93.2% · 50.5% | 68.5% · 94.8% · 55.1% | 70.3% · 95.0% · 54.9% |
+
+87% to 91% of those commits' authors had earlier commits among the 500. How
+much the comparison counts (a weight of 0.1, or 0.15 with a subject, smoothed
+with one commit's worth of the training mix) was chosen on the six held-out
+training projects.
+
 Full numbers and how to reproduce them: [eval/README.md](eval/README.md).
 
 ## How it works
@@ -367,7 +395,8 @@ Full numbers and how to reproduce them: [eval/README.md](eval/README.md).
    Python or model file. `gca-rs/tests/parity.rs` checks that Rust matches
    Python within 1e-6 (1e-9 for the subject model). At run time gca also
    reads the repository's last 500 commits, for the scope and for the
-   types the project and the files you are committing usually get.
+   types the project and the files you are committing usually get, and
+   reads your own latest ones among them again.
    After exporting new weights, rebuild the CLI or pass the JSON with `--model`.
 
 gca always reads the diff in git's default format, whatever personal settings
@@ -448,8 +477,6 @@ builds the installer on Windows.
 - Draft the subject of other commits too, still offline: a small built-in
   model that completes the subject after the chosen type and scope (mechanical
   commits already get [drafts](#subject-drafts))
-- Learn from the types a user picks over the suggestion, beyond the types
-  the project and its files already get, which gca reads from the history
 - Better `refactor` / `perf` with features about whether behavior changed
 - Notice staged changes that mix unrelated work and suggest splitting them
 - Suggest `!` for breaking changes. Spotting removed exports is not enough:

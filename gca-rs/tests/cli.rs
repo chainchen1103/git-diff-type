@@ -555,6 +555,77 @@ fn the_types_of_commits_to_the_same_files_tilt_the_ranking() {
 }
 
 #[test]
+fn the_types_you_chose_for_your_own_commits_tilt_the_ranking() {
+    // Two projects with the same mix of types, the same commits and the same
+    // staged change; only who wrote the perf and who the fix commits differs.
+    let perf_probability = |mine: &str, theirs: &str| {
+        let repo = Repo::new();
+        for i in 0..10 {
+            repo.write("a.txt", &format!("{i}\n"));
+            repo.git(&["add", "-A"]);
+            repo.git(&["commit", "-q", "-m", &format!("{mine}: a {i}")]);
+            repo.write("b.txt", &format!("{i}\n"));
+            repo.git(&["add", "-A"]);
+            repo.git(&[
+                "-c",
+                "user.name=Other",
+                "-c",
+                "user.email=other@example.com",
+                "commit",
+                "-q",
+                "-m",
+                &format!("{theirs}: b {i}"),
+            ]);
+        }
+        repo.write(
+            "src/lib.rs",
+            "pub fn one() -> u32 {\n    let n = 1;\n    n\n}\n",
+        );
+        repo.git(&["add", "-A"]);
+        let v = json(&repo.gca(&["--dry-run", "--json", "--topk", "11"]));
+        assert_eq!(v["ranked_with_history"], 21);
+        assert_eq!(v["ranked_with_own_commits"], 10);
+        v["suggestions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["type"] == "perf")
+            .unwrap()["probability"]
+            .as_f64()
+            .unwrap()
+    };
+    let (perf_mine, perf_theirs) = (
+        perf_probability("perf", "fix"),
+        perf_probability("fix", "perf"),
+    );
+    assert!(
+        perf_mine > 1.3 * perf_theirs,
+        "{perf_mine} vs {perf_theirs}"
+    );
+}
+
+#[test]
+fn nobody_s_own_commits_without_an_identity() {
+    let repo = Repo::new();
+    repo.write("src/lib.rs", "pub fn two() -> u32 {\n    2\n}\n");
+    repo.git(&["add", "-A"]);
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_gca"));
+    repo.env(&mut cmd);
+    let out = cmd
+        .args(["--dry-run", "--json"])
+        .env("GIT_AUTHOR_NAME", "Someone Else")
+        .env("GIT_AUTHOR_EMAIL", "else@example.com")
+        .output()
+        .unwrap();
+    assert_eq!(json(&out)["ranked_with_own_commits"], 0);
+    // the initial commit is the test user's own
+    assert_eq!(
+        json(&repo.gca(&["--dry-run", "--json"]))["ranked_with_own_commits"],
+        1
+    );
+}
+
+#[test]
 fn a_commitlint_config_sets_the_types_and_the_header_limit() {
     let repo = Repo::new();
     repo.write(

@@ -4,6 +4,16 @@
 
 ### Added
 
+- **Your own commits count toward the type.** gca takes your latest 10
+  commits among the last 500, works out what it would have suggested for
+  each, and compares that with the type you gave it: a type you choose more
+  often than it suggests rises. It reads them from the history every time,
+  so nothing is stored. On recent commits of projects gca never saw, with
+  each commit's author standing for you, the first suggestion is right 62.3%
+  of the time instead of 55.7%, and 70.2% instead of 67.8% with the subject.
+  `--dry-run --json` reports how many it read as `ranked_with_own_commits`.
+  `eval/tune_history.py` chose the settings and `eval/evaluate_history.py`
+  scores them.
 - **The commits to the same files count toward the type.** Of the last 500
   commits, gca takes the ones that touched a file you are committing and
   tilts the ranking toward their types too, after the project's own mix. On
@@ -13,6 +23,11 @@
   commits touched those files as `ranked_with_file_history`.
   `eval/tune_history.py` chose the weights and `eval/evaluate_history.py`
   scores them.
+
+### Fixed
+
+- With `log.showSignature` set, git's signature checks were read as files of
+  the previous commit in the history gca reads.
 
 ## 0.3.0
 

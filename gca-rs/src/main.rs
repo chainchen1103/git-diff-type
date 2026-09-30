@@ -346,19 +346,20 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
         .or(drafted.as_ref().map(|d| d.subject.as_str()));
     let log = git::recent_log(history::DEPTH);
     let paths: Vec<String> = change.files.iter().map(|f| f.path.clone()).collect();
-    let habits = history::habits(&log, &paths);
+    let learned = Learned::read(&model, &log, &paths);
     let Ranking {
         types: ranked,
         preselect,
         with_subject,
         with_history,
         with_file_history,
+        with_own_commits,
     } = rank(
         &model,
         &change,
         drafted.as_ref(),
         subject,
-        &habits,
+        &learned,
         &rules,
         cli.topk.into(),
     )?;
@@ -372,6 +373,7 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
                 ranked_with_subject: subject.filter(|_| with_subject),
                 ranked_with_history: with_history,
                 ranked_with_file_history: with_file_history,
+                ranked_with_own_commits: with_own_commits,
                 rules: &rules,
             };
             print_json(&change, &ranked, preselect, &extras)?;
@@ -451,7 +453,7 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
             &change,
             drafted.as_ref(),
             Some(&subject),
-            &habits,
+            &learned,
             &rules,
             cli.topk.into(),
         )?;
@@ -637,14 +639,14 @@ fn hook_run(file: &Path, source: Option<&str>) -> Result<()> {
     };
     let log = git::recent_log(history::DEPTH);
     let paths: Vec<String> = change.files.iter().map(|f| f.path.clone()).collect();
-    let habits = history::habits(&log, &paths);
+    let learned = Learned::read(&model, &log, &paths);
     let rules = project_rules();
     let ranking = rank(
         &model,
         &change,
         drafted.as_ref(),
         subject,
-        &habits,
+        &learned,
         &rules,
         3,
     )?;
@@ -694,12 +696,15 @@ struct Ranking<'m> {
     with_history: usize,
     /// How many of those touched a file in this change.
     with_file_history: usize,
+    /// How many of your own recent commits were read again.
+    with_own_commits: usize,
 }
 
 /// A known subject's model is combined with the diff model's, the result is
-/// tilted toward the types the project itself uses and then toward the ones
-/// its commits to the same files used, and types its commitlint config does
-/// not allow drop out. A path rule
+/// tilted toward the types the project itself uses, then toward the ones its
+/// commits to the same files used, then by the types you chose for your own
+/// recent commits, and types its commitlint config does not allow drop out.
+/// A path rule
 /// (docs, test, ci) or the type a subject draft implies (a release is
 /// `chore`) is pre-selected even when ranked lower, as long as the model
 /// knows that type.
@@ -708,36 +713,35 @@ fn rank<'m>(
     change: &Change,
     drafted: Option<&Draft>,
     subject: Option<&str>,
-    habits: &history::Habits,
+    learned: &Learned,
     rules: &'m Rules,
     topk: usize,
 ) -> Result<Ranking<'m>> {
-    let diff: String = change.diff.chars().take(MAX_DIFF_CHARS).collect();
-    let s = &change.stats;
-    let numeric = [
-        s.files_changed as f64,
-        s.additions as f64,
-        s.deletions as f64,
-        s.additions as f64 / (s.deletions as f64 + 1.0),
-    ];
-    let mut probs = model
-        .predict_proba(&model.build_features(&diff, numeric))
-        .context("model inference failed")?;
+    let Learned { habits, own } = learned;
+    let mut probs = diff_probs(model, &change.diff, &change.stats)?;
+    let subjects = match subject {
+        Some(_) => Some(SubjectModel::embedded().context("the built-in subject model is invalid")?),
+        None => None,
+    };
     let mut with_subject = false;
-    if let Some(subject) = subject {
-        let subjects = SubjectModel::embedded().context("the built-in subject model is invalid")?;
+    if let (Some(subject), Some(subjects)) = (subject, &subjects) {
         if let Some(combined) = subjects.combine(&model.payload.classes, &probs, subject) {
             probs = combined;
             with_subject = true;
         }
     }
-    let (weight, file_weight) = if with_subject {
+    let (weight, file_weight, own_weight) = if with_subject {
         (
             history::HABIT_WEIGHT_WITH_SUBJECT,
             history::FILE_HABIT_WEIGHT_WITH_SUBJECT,
+            history::OWN_WEIGHT_WITH_SUBJECT,
         )
     } else {
-        (history::HABIT_WEIGHT, history::FILE_HABIT_WEIGHT)
+        (
+            history::HABIT_WEIGHT,
+            history::FILE_HABIT_WEIGHT,
+            history::OWN_WEIGHT,
+        )
     };
     let classes = &model.payload.classes;
     let mut with_history = 0;
@@ -762,6 +766,31 @@ fn rank<'m>(
     ) {
         probs = tilted;
         with_file_history = habits.same_files.values().sum();
+    }
+    // Then by how the types you gave your own recent commits differ from
+    // what gca would have shown for them, with the subject if this ranking
+    // has one.
+    let shown: Vec<Vec<f64>> = own
+        .iter()
+        .map(|c| match (&subjects, with_subject) {
+            (Some(subjects), true) => subjects
+                .combine(classes, &c.probs, &c.subject)
+                .unwrap_or_else(|| c.probs.clone()),
+            _ => c.probs.clone(),
+        })
+        .collect();
+    let chosen: Vec<&str> = own.iter().map(|c| c.kind.as_str()).collect();
+    let mut with_own_commits = 0;
+    if let Some(tilted) = history::weigh_by_own_choices(
+        classes,
+        &probs,
+        &chosen,
+        &shown,
+        own_weight,
+        history::OWN_PSEUDO_COMMITS,
+    ) {
+        probs = tilted;
+        with_own_commits = own.len();
     }
     // Types the project's commitlint config does not allow drop out.
     if rules.types.is_some() {
@@ -810,7 +839,73 @@ fn rank<'m>(
         with_subject,
         with_history,
         with_file_history,
+        with_own_commits,
     })
+}
+
+/// The diff model's probabilities for a change.
+fn diff_probs(model: &Model, diff: &str, stats: &git::Stats) -> Result<Vec<f64>> {
+    let diff: String = diff.chars().take(MAX_DIFF_CHARS).collect();
+    let numeric = [
+        stats.files_changed as f64,
+        stats.additions as f64,
+        stats.deletions as f64,
+        stats.additions as f64 / (stats.deletions as f64 + 1.0),
+    ];
+    model
+        .predict_proba(&model.build_features(&diff, numeric))
+        .context("model inference failed")
+}
+
+/// What the recent history says about the type, besides the change itself.
+struct Learned {
+    habits: history::Habits,
+    own: Vec<OwnCommit>,
+}
+
+impl Learned {
+    fn read(model: &Model, log: &[history::LogEntry], paths: &[String]) -> Self {
+        Learned {
+            habits: history::habits(log, paths),
+            own: own_commits(model, log),
+        }
+    }
+}
+
+/// One of your recent commits: the type you gave it, its subject, and what
+/// the diff model says about its change.
+struct OwnCommit {
+    kind: String,
+    subject: String,
+    probs: Vec<f64>,
+}
+
+/// Your latest typed commits among the recent ones, read again by the diff
+/// model. Empty when git knows no identity or you have none; a commit that
+/// cannot be read is left out.
+fn own_commits(model: &Model, log: &[history::LogEntry]) -> Vec<OwnCommit> {
+    let Some(me) = git::author_ident() else {
+        return Vec::new();
+    };
+    let mine = history::own_commits(log, &me, &model.payload.classes);
+    if mine.is_empty() {
+        return Vec::new();
+    }
+    let shas: Vec<&str> = mine.iter().map(|(e, _)| e.sha.as_str()).collect();
+    let Ok(changes) = git::commit_changes(&shas, MAX_DIFF_CHARS) else {
+        return Vec::new();
+    };
+    mine.into_iter()
+        .filter_map(|(entry, kind)| {
+            let change = changes.get(&entry.sha)?;
+            let probs = diff_probs(model, &change.diff, &change.stats).ok()?;
+            Some(OwnCommit {
+                kind: kind.to_string(),
+                subject: entry.subject.clone(),
+                probs,
+            })
+        })
+        .collect()
 }
 
 /// The ranked types, plus "other type" for the rest. `None` if cancelled.
@@ -898,6 +993,7 @@ struct JsonExtras<'a> {
     ranked_with_subject: Option<&'a str>,
     ranked_with_history: usize,
     ranked_with_file_history: usize,
+    ranked_with_own_commits: usize,
     rules: &'a Rules,
 }
 
@@ -913,6 +1009,7 @@ fn print_json(
         ranked_with_subject,
         ranked_with_history,
         ranked_with_file_history,
+        ranked_with_own_commits,
         rules,
     } = extras;
     let files: Vec<_> = change
@@ -942,6 +1039,7 @@ fn print_json(
         "ranked_with_subject": ranked_with_subject,
         "ranked_with_history": ranked_with_history,
         "ranked_with_file_history": ranked_with_file_history,
+        "ranked_with_own_commits": ranked_with_own_commits,
         "commitlint": rules.file.as_ref().map(|file| serde_json::json!({
             "config": file.display().to_string(),
             "types": rules.types,
