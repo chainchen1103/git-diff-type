@@ -4,6 +4,13 @@
 
 ### Added
 
+- **`gca hook install`** adds a `prepare-commit-msg` hook, so plain
+  `git commit`, editors and git GUIs get the suggested type too: a subject
+  from `git commit -m` or a GUI's message box gets the type `gca -y` would
+  pick, and the editor opens with the type, any subject draft and the
+  ranking. Typed prefixes, merges, reverts, cherry-picks, rebases and amended
+  commits keep their messages; the hook never stops a commit, and
+  `GCA_HOOK=0` skips it once. `gca hook uninstall` removes it.
 - **The subject counts toward the type.** When the subject is known before
   the type, passed with `-m` or drafted, a second model reads it and its
   probabilities are combined with the diff model's. On recent commits of

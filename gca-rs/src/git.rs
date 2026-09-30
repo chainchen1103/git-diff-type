@@ -117,6 +117,35 @@ pub fn operation_in_progress() -> Result<Option<&'static str>> {
     Ok(None)
 }
 
+/// Whether git is replaying commits (a merge, cherry-pick, revert or rebase),
+/// which keep their original messages.
+pub fn replaying() -> Result<bool> {
+    if operation_in_progress()?.is_some() {
+        return Ok(true);
+    }
+    for dir in ["rebase-merge", "rebase-apply", "sequencer"] {
+        if git_path(dir)?.exists() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Where git looks for a hook: `.git/hooks`, or core.hooksPath, which a
+/// relative path means from the top of the work tree.
+pub fn hook_path(name: &str) -> Result<PathBuf> {
+    let top = PathBuf::from(run(None, &["rev-parse", "--show-toplevel"])?.trim());
+    let top_arg = top.to_string_lossy();
+    let rel = format!("hooks/{name}");
+    let out = run(None, &["-C", &top_arg, "rev-parse", "--git-path", &rel])?;
+    let path = PathBuf::from(out.trim());
+    Ok(if path.is_absolute() {
+        path
+    } else {
+        top.join(path)
+    })
+}
+
 /// A throwaway copy of the index. Previewing `-a` or a list of paths stages
 /// into this copy, so the user's own index is never touched before the
 /// commit is confirmed. Removed when dropped.

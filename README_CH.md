@@ -141,6 +141,19 @@ gca config remote upstream   # push 到這裡（未設定時：分支的 upstrea
 
 `gca.push` 的值無效時，gca 會在暫存任何東西之前就停止。
 
+### Commit hook
+
+`gca hook install` 會在儲存庫加上 `prepare-commit-msg` hook（有設定 `core.hooksPath` 時裝在那裡），
+讓不經過 gca 的 commit 也有類型：
+
+- `git commit -m "make parsing faster"`，以及直接送出訊息框內容的 git 圖形介面：前面會加上
+  `gca -y` 會選的類型，例如 `perf: make parsing faster`。和 `gca -m` 一樣，摘要也會拿來判斷類型。
+- `git commit` 開啟編輯器時：第一行先填好類型，有草稿時接著填上摘要，排序結果以註解列在下面。
+- 已經以類型或其他 `word:` 開頭的訊息、merge、revert、cherry-pick、rebase 與 amend 都保留原本的訊息。
+
+hook 絕不會擋下 commit。`GCA_HOOK=0 git commit ...` 可以略過一次，`gca hook uninstall` 則會移除它。
+已經有別的 hook 時，gca 不會覆蓋，請改在那個 hook 裡加上 `gca hook run "$@" || true`。
+
 ### 預選規則
 
 當所有變更的檔案都屬於文件、測試或 CI 設定（例如 `docs/`、`*_test.go`、`.github/workflows/`），
@@ -316,7 +329,6 @@ CI 在每次 push 時執行這些檢查（Rust 部分在 Windows、macOS、Linux
 - 依使用者在自己儲存庫的選擇做本地微調，先從用各儲存庫自己的類型分佈校正開始
 - 讀取專案的 commitlint 設定（自訂類型、header 長度）
 - 改善 `refactor` / `perf`：加入「行為是否改變」相關的特徵
-- 提供 `prepare-commit-msg` hook，讓編輯器與 git 圖形介面的 commit 視窗也能預填建議
 - 發現暫存內容混雜了不相關的變更時，建議拆成幾個 commit；看起來是破壞性變更
   （例如刪除 export、改動函式簽名）時，建議加上 `!`
 

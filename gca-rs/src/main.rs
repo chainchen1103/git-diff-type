@@ -6,6 +6,7 @@ mod features;
 mod git;
 mod heuristics;
 mod history;
+mod hook;
 mod message;
 mod model;
 mod subject;
@@ -47,7 +48,8 @@ Examples:
   gca src/auth                 commit only src/auth
   gca -t fix -m \"handle empty diff\"
                                commit without prompts
-  gca --dry-run --json         print the suggestions for scripts and editors";
+  gca --dry-run --json         print the suggestions for scripts and editors
+  gca hook install             give plain `git commit` messages a type too";
 
 #[derive(Parser, Debug)]
 #[command(
@@ -146,6 +148,27 @@ enum Cmd {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
+    /// Put the suggested type into messages from plain `git commit`, editors
+    /// and git GUIs, with a prepare-commit-msg hook in this repository.
+    Hook {
+        #[command(subcommand)]
+        action: HookCmd,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum HookCmd {
+    /// Install the hook (in core.hooksPath, if that is set).
+    Install,
+    /// Remove the hook gca installed.
+    Uninstall,
+    /// What the hook runs: edit the message git is about to use.
+    #[command(hide = true)]
+    Run {
+        file: PathBuf,
+        source: Option<String>,
+        commit: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -208,6 +231,21 @@ fn main() -> ExitCode {
             clap_complete::generate(*shell, &mut Cli::command(), "gca", &mut std::io::stdout());
             Ok(ExitCode::SUCCESS)
         }
+        Some(Cmd::Hook { action }) => match action {
+            HookCmd::Install => git::ensure_work_tree()
+                .and_then(|_| hook::install())
+                .map(|_| ExitCode::SUCCESS),
+            HookCmd::Uninstall => git::ensure_work_tree()
+                .and_then(|_| hook::uninstall())
+                .map(|_| ExitCode::SUCCESS),
+            HookCmd::Run { file, source, .. } => {
+                // A hook that fails would stop the commit; say why and let it through.
+                if let Err(e) = hook_run(file, source.as_deref()) {
+                    eprintln!("gca hook: {e:#}");
+                }
+                Ok(ExitCode::SUCCESS)
+            }
+        },
         None => commit_flow(&cli),
     };
     match result {
@@ -469,6 +507,49 @@ fn read_change(mode: Mode, paths: &[String]) -> Result<Option<Change>> {
         stats: git::staged_stats(index, paths)?,
         diff,
     }))
+}
+
+/// `gca hook run`: put the suggested `type(scope): ` in front of the
+/// message git is about to use, as `gca -y` would choose it.
+fn hook_run(file: &Path, source: Option<&str>) -> Result<()> {
+    let Some(source) = hook::Source::from_git(source) else {
+        return Ok(());
+    };
+    if std::env::var("GCA_HOOK").is_ok_and(|v| matches!(v.trim(), "0" | "off" | "false" | "no")) {
+        return Ok(());
+    }
+    let text = std::fs::read_to_string(file)
+        .with_context(|| format!("could not read {}", file.display()))?;
+    let first = text.lines().next().unwrap_or("").trim();
+    if hook::keeps(first)
+        || (source == hook::Source::Message && first.is_empty())
+        || git::replaying()?
+    {
+        return Ok(());
+    }
+    let Some(change) = read_change(Mode::Staged, &[])? else {
+        return Ok(());
+    };
+    let model = load_model(None)?;
+    let drafted = draft::draft(&change.files, &change.diff);
+    let draft_subject = drafted.as_ref().map(|d| d.subject.as_str());
+    let subject = match source {
+        hook::Source::Message => Some(first),
+        hook::Source::Editor => draft_subject,
+    };
+    let ranking = rank(&model, &change, drafted.as_ref(), subject, 3)?;
+    let paths: Vec<String> = change.files.iter().map(|f| f.path.clone()).collect();
+    let hint = history::scope_hint(&git::recent_log(history::DEPTH), &paths);
+    let scope = hint.suggestion.filter(|_| hint.repo_uses_scopes);
+    let kind = ranking.types[ranking.preselect].0;
+    let prefix = message::header(kind, scope.as_deref(), false, "");
+    let note = (source == hook::Source::Editor && hook::comments_are_stripped())
+        .then(|| hook::note(&ranking.types));
+    if let Some(edited) = hook::edit(&text, source, &prefix, draft_subject, note.as_deref()) {
+        std::fs::write(file, edited)
+            .with_context(|| format!("could not write {}", file.display()))?;
+    }
+    Ok(())
 }
 
 fn load_model(path: Option<&Path>) -> Result<Model> {

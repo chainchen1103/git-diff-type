@@ -163,6 +163,24 @@ gca config remote upstream   # push there (default: the branch's upstream, then 
 
 An invalid `gca.push` value stops gca before anything is staged.
 
+### Commit hook
+
+`gca hook install` adds a `prepare-commit-msg` hook to the repository (in
+`core.hooksPath`, if that is set), so commits made without gca get a type too:
+
+- `git commit -m "make parsing faster"`, and git GUIs that commit their
+  message box as it is, get the type `gca -y` would pick:
+  `perf: make parsing faster`. The subject counts toward the type, as with
+  `gca -m`.
+- `git commit` opens the editor with the type on the first line, followed by
+  the subject draft if there is one, and the ranking in a comment below.
+- Messages that already start with a type or another `word:` prefix, merges,
+  reverts, cherry-picks, rebases and amended commits keep their messages.
+
+The hook never stops a commit. `GCA_HOOK=0 git commit ...` skips it once, and
+`gca hook uninstall` removes it. gca does not replace a hook that is already
+there; add `gca hook run "$@" || true` to that one instead.
+
 ### Pre-selection rule
 
 When every changed file is documentation, a test, or CI configuration (for
@@ -377,8 +395,6 @@ builds the installer on Windows.
   with each repository's own mix of types
 - Read the project's commitlint config (custom types, header length)
 - Better `refactor` / `perf` with features about whether behavior changed
-- A `prepare-commit-msg` hook, so editors and git GUIs get the suggestion in
-  their commit box too
 - Notice staged changes that mix unrelated work and suggest splitting them;
   suggest `!` when a change looks breaking, such as a removed export or a
   changed signature

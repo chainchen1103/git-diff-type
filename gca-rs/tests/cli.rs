@@ -333,6 +333,136 @@ fn the_subject_steers_the_suggested_type() {
     assert_eq!(repo.head_message(), "perf: make one faster");
 }
 
+fn git_with(repo: &Repo, env: &[(&str, &str)], args: &[&str]) -> Output {
+    let mut cmd = Command::new("git");
+    repo.env(&mut cmd);
+    cmd.envs(env.iter().copied());
+    let out = cmd.args(args).output().unwrap();
+    assert!(out.status.success(), "git {args:?}: {}", stderr(&out));
+    out
+}
+
+/// A message's type, if it starts with one of the eleven.
+fn type_of(message: &str) -> Option<&str> {
+    let (head, _) = message.split_once(": ")?;
+    let kind = head.split('(').next()?.trim_end_matches('!');
+    [
+        "feat", "fix", "docs", "style", "refactor", "perf", "test", "build", "ci", "chore",
+        "revert",
+    ]
+    .contains(&kind)
+    .then_some(kind)
+}
+
+#[test]
+fn the_hook_types_plain_git_commits() {
+    let repo = Repo::new();
+    let out = repo.gca(&["hook", "install"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let hook = repo.path().join(".git/hooks/prepare-commit-msg");
+    assert!(fs::read_to_string(&hook)
+        .unwrap()
+        .contains("gca hook install"));
+
+    // git commit -a -m: the subject gets the type gca -y would pick
+    repo.write(
+        "src/lib.rs",
+        "pub fn one() -> u32 {\n    let n = 1;\n    n\n}\n",
+    );
+    git_with(&repo, &[], &["commit", "-q", "-a", "-m", "make one faster"]);
+    assert_eq!(repo.head_message(), "perf: make one faster");
+
+    // a type the author wrote stays, and GCA_HOOK=0 skips the hook
+    repo.write("README.md", "# demo\n\nmore\n");
+    git_with(
+        &repo,
+        &[],
+        &["commit", "-q", "-a", "-m", "docs: explain more"],
+    );
+    assert_eq!(repo.head_message(), "docs: explain more");
+    repo.write("README.md", "# demo\n\neven more\n");
+    git_with(
+        &repo,
+        &[("GCA_HOOK", "0")],
+        &["commit", "-q", "-a", "-m", "no type"],
+    );
+    assert_eq!(repo.head_message(), "no type");
+
+    // in the editor the first line starts with the type; the ranking is a comment
+    let append =
+        r#"f() { printf '%sreturn two\n' "$(head -n 1 "$1")" > "$1.tmp" && mv "$1.tmp" "$1"; }; f"#;
+    repo.write("src/lib.rs", "pub fn one() -> u32 {\n    2\n}\n");
+    git_with(&repo, &[("GIT_EDITOR", append)], &["commit", "-q", "-a"]);
+    let message = repo.head_message();
+    assert!(type_of(&message).is_some(), "{message}");
+    assert!(message.ends_with(": return two"), "{message}");
+
+    // a subject draft is filled in whole
+    repo.write(
+        "package.json",
+        "{\n  \"dependencies\": {\n    \"zod\": \"^3.22.0\"\n  }\n}\n",
+    );
+    git_with(&repo, &[("GCA_HOOK", "0")], &["add", "-A"]);
+    git_with(
+        &repo,
+        &[("GCA_HOOK", "0")],
+        &["commit", "-q", "-m", "chore: add zod"],
+    );
+    repo.write(
+        "package.json",
+        "{\n  \"dependencies\": {\n    \"zod\": \"^3.23.8\"\n  }\n}\n",
+    );
+    git_with(&repo, &[("GIT_EDITOR", "true")], &["commit", "-q", "-a"]);
+    let message = repo.head_message();
+    assert!(type_of(&message).is_some(), "{message}");
+    assert!(
+        message.ends_with(": bump zod from 3.22.0 to 3.23.8"),
+        "{message}"
+    );
+    assert!(!message.contains("gca suggests"), "{message}");
+
+    // gca's own commits are left as they are
+    repo.write("src/lib.rs", "pub fn one() -> u32 {\n    3\n}\n");
+    let out = repo.gca(&["-a", "-t", "fix", "-m", "return three"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(repo.head_message(), "fix: return three");
+
+    let out = repo.gca(&["hook", "uninstall"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(!hook.exists());
+}
+
+#[test]
+fn the_hook_leaves_other_hooks_alone() {
+    let repo = Repo::new();
+    let hook = repo.path().join(".git/hooks/prepare-commit-msg");
+    fs::write(&hook, "#!/bin/sh\necho mine\n").unwrap();
+
+    let out = repo.gca(&["hook", "install"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("gca hook run"), "{}", stderr(&out));
+    let out = repo.gca(&["hook", "uninstall"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(fs::read_to_string(&hook).unwrap(), "#!/bin/sh\necho mine\n");
+}
+
+#[test]
+fn the_hook_goes_where_core_hooks_path_points() {
+    let repo = Repo::new();
+    repo.git(&["config", "core.hooksPath", ".githooks"]);
+    fs::create_dir_all(repo.path().join("src/deep")).unwrap();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_gca"));
+    repo.env(&mut cmd);
+    let out = cmd
+        .current_dir(repo.path().join("src/deep"))
+        .args(["hook", "install"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(repo.path().join(".githooks/prepare-commit-msg").exists());
+    assert!(!repo.path().join(".git/hooks/prepare-commit-msg").exists());
+}
+
 #[test]
 fn ordinary_changes_get_no_subject_draft() {
     let repo = Repo::new();
