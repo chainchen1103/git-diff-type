@@ -162,8 +162,7 @@ impl ScratchIndex {
         };
         let path = real.with_file_name(format!("gca-index-{}", std::process::id()));
         if real.exists() {
-            std::fs::copy(&real, &path)
-                .with_context(|| format!("could not copy the index to {}", path.display()))?;
+            copy_index(&real, &path)?;
         }
         Ok(Self { path })
     }
@@ -171,6 +170,20 @@ impl ScratchIndex {
     pub fn path(&self) -> &Path {
         &self.path
     }
+}
+
+/// Copies the index and keeps its modification time. Git trusts an entry
+/// whose file looks older than the index, so a copy that looks newer would
+/// hide a change made as soon after `git add` as the file system can tell.
+fn copy_index(from: &Path, to: &Path) -> Result<()> {
+    std::fs::copy(from, to)
+        .with_context(|| format!("could not copy the index to {}", to.display()))?;
+    let time = std::fs::metadata(from).and_then(|m| m.modified());
+    let file = std::fs::File::options().write(true).open(to);
+    if let (Ok(time), Ok(file)) = (time, file) {
+        let _ = file.set_modified(time);
+    }
+    Ok(())
 }
 
 impl Drop for ScratchIndex {
@@ -458,6 +471,24 @@ pub fn set_config(key: &str, value: &str, local: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_index_copy_keeps_its_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let (from, to) = (dir.path().join("index"), dir.path().join("copy"));
+        std::fs::write(&from, b"DIRC").unwrap();
+        // whole 100 ns, which every file system CI runs on can store
+        let past = std::time::UNIX_EPOCH + std::time::Duration::new(1_700_000_000, 123_456_700);
+        std::fs::File::options()
+            .write(true)
+            .open(&from)
+            .unwrap()
+            .set_modified(past)
+            .unwrap();
+        copy_index(&from, &to).unwrap();
+        assert_eq!(std::fs::read(&to).unwrap(), b"DIRC");
+        assert_eq!(std::fs::metadata(&to).unwrap().modified().unwrap(), past);
+    }
 
     #[test]
     fn numstat_z_plain_binary_and_rename() {

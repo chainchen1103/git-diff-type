@@ -32,6 +32,10 @@
 
 ### Fixed
 
+- `-a` and paths could miss a change made right after the last `git add`,
+  or report that nothing had changed: the copy of the index they preview in
+  looked newer than the index, so git trusted file times it should have
+  checked. The copy now keeps the index's time.
 - With `diff.renames` turned off, a moved file was read as a deletion plus an
   addition, and its whole content went to the model as changed lines. gca and
   the miner now pin rename detection like the other diff settings.
