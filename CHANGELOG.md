@@ -4,6 +4,15 @@
 
 ### Added
 
+- **The subject counts toward the type.** When the subject is known before
+  the type, passed with `-m` or drafted, a second model reads it and its
+  probabilities are combined with the diff model's. On recent commits of
+  projects gca never saw, the first suggestion is right 61.3% of the time
+  instead of 43.5%, and the right type is in the top three 90.4% instead of
+  85.9%. `--dry-run --json` names the subject it used as
+  `ranked_with_subject`. `train_subject.py` trains the model,
+  `eval/tune_fusion.py` chose how much it counts, and
+  `eval/evaluate_subject.py` scores it.
 - **Subject drafts** for mechanical changes: dependency bumps, additions and
   removals in `package.json`, `Cargo.toml`, `pyproject.toml`,
   `requirements*.txt`, `go.mod` and GitHub Actions workflows; lockfile

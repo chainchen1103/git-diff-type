@@ -88,7 +88,8 @@ gca src/auth tests/auth    # 只 commit 這些路徑（包含新檔案），其�
 
 互動流程：
 
-1. **類型**：依機率排序，按 Enter 採用預選的；不在前幾名時選「other type…」。
+1. **類型**：依機率排序。摘要事先已知時（`-m` 或[草稿](#摘要草稿)），排序會同時參考 diff 與摘要。
+   按 Enter 採用預選的；不在前幾名時選「other type…」。
 2. **Scope**：只有專案本身在用 scope 時才會問。預填的是**這些檔案過去最常用的 scope**
    （從最近 500 個 commit 學來，不計 bot），可直接改或清空。
 3. **摘要**：一行描述。機械性的變更會先擬好一個，例如 `bump zod from 3.22.0 to 3.23.8`、
@@ -121,6 +122,8 @@ Esc 或 Ctrl-C 隨時取消，暫存區不受影響。`-a` 和指定路徑都先
 不需互動、可放進腳本：`gca -a -t fix -m "handle empty diff"`（專案有用 scope 時再加上
 `--scope <scope>`，不要 scope 則用 `--scope ""`），或 `gca -y -m "update guide"` 直接採用建議的類型與 scope。
 沒有終端機時，gca 會列出還缺哪些參數，而不是卡住。
+
+用 `-m` 給的摘要也會拿來判斷類型，第一個建議正確的機會大幅提高，見[參考摘要](#參考摘要)。
 
 結束代碼：`0` 已 commit（或 dry run 完成）、`1` 沒有可 commit 的內容／取消／git 失敗、
 `2` 參數錯誤、`130` Ctrl-C。
@@ -202,6 +205,25 @@ bot 產生的 commit 另外統計在 `eval/results.json`。
 變更的差別在於**意圖**，diff 很少透露。這也是 gca 給你排序好的清單、而不是替你決定的原因；
 commit 前請確認建議的類型。
 
+### 參考摘要
+
+摘要在選類型之前就已知時（`-m` 或[草稿](#摘要草稿)），gca 也會讀它：「speed up」「rename」這類字眼
+說出了 diff 看不出的意圖。在同一批 commit 上，用作者自己寫的摘要（去掉類型前綴）測試：
+
+| 測試資料 | 只看 diff | 只看摘要 | 兩者合併（gca 的做法） |
+| --- | ---: | ---: | ---: |
+| **沒看過的專案**，訓練後的 commit | 43.5% · 85.9% · 42.9% | 58.0% · 86.6% · 36.5% | **61.3% · 90.4% · 50.8%** |
+| 沒看過的專案，較早的歷史 | 44.6% · 83.7% · 36.2% | 55.1% · 85.7% · 34.8% | 57.9% · 88.4% · 45.5% |
+| 訓練過的專案，訓練後的 commit | 58.0% · 89.7% · 44.9% | 60.5% · 88.2% · 38.7% | 67.9% · 93.6% · 52.0% |
+
+每格依序是：第一個建議正確 · 正確類型在前 3 · 各類型平均召回率。在第一列，`refactor` 從從未排第一
+變成 26.6%，`perf` 從 2.7% 提高到 18.4%。檔案路徑本身就看得出的類型略降（`docs` 77.7% → 75.7%、
+`ci` 77.9% → 76.7%），`test` 降得較多（71.2% → 58.7%）；所有檔案都符合時，預選規則仍會預選這三種。
+
+摘要模型是以單字與相鄰兩字為特徵的邏輯斯迴歸，用和 diff 模型相同的 commit 的摘要訓練（`train_subject.py`）。
+gca 把兩個模型的機率相乘：摘要的機率取 0.25 次方，並以 0.15 次方除去各類型在訓練資料中的比例。
+這兩個設定是在另外保留的六個訓練專案上選的，沒有用到測試資料。
+
 完整數字與重現方式見 [eval/README.md](eval/README.md)。
 
 ## 運作方式
@@ -214,10 +236,14 @@ commit 前請確認建議的類型。
 2. **訓練**：TF-IDF（diff 內容）＋檔案路徑與副檔名詞袋＋新增與刪除詞彙的重疊程度＋增刪行數，
    餵給機率校準過的 LinearSVC，輸出 11 個類型的機率。diff 只讀前 20,000 個字元。
    接著依各類型在訓練資料中的常見程度修正機率（`eval/tune_prior.py`）；不這樣做的話，
-   大部分的 diff 都會被判成 `fix`，`refactor`、`perf` 幾乎不會排第一。
-3. **匯出**：`export_model.py` 把整條 sklearn pipeline 攤平成 `out/model_v2.json`。
-4. **推論**：Rust CLI 在編譯時嵌入這份 JSON，自己實作同樣的前向運算，所以安裝後只需要 git，
-   不需要 Python 或模型檔。`gca-rs/tests/parity.rs` 驗證 Rust 與 Python 的機率誤差小於 1e-6。
+   大部分的 diff 都會被判成 `fix`，`refactor`、`perf` 幾乎不會排第一。摘要在選類型前已知時，
+   另一個較小的模型會讀摘要：以單字與相鄰兩字為特徵的邏輯斯迴歸（`train_subject.py`，
+   見[參考摘要](#參考摘要)）。
+3. **匯出**：`export_model.py` 把整條 sklearn pipeline 攤平成 `out/model_v2.json`；
+   `train_subject.py` 直接寫出 `out/subject_model.json`。
+4. **推論**：Rust CLI 在編譯時嵌入這兩份 JSON，自己實作同樣的前向運算，所以安裝後只需要 git，
+   不需要 Python 或模型檔。`gca-rs/tests/parity.rs` 驗證 Rust 與 Python 的機率誤差小於 1e-6
+   （摘要模型小於 1e-9）。
    匯出新權重後，重新編譯 CLI，或用 `--model` 指定 JSON。
 
 gca 讀 diff 時固定使用 git 的預設格式（不受 `diff.noprefix`、`color.ui` 等個人設定影響），
@@ -243,6 +269,11 @@ python verify_export.py --data datasets/test_unseen_recent.jsonl
 python gca-rs/gen_fixtures.py --synthetic --out gca-rs/tests/synthetic_fixtures.json
 python gca-rs/gen_fixtures.py --data datasets/test_unseen_recent.jsonl
 bash eval/run.sh                        # 在三組測試集上評估
+python eval/tune_fusion.py ...          # 摘要要佔多少份量（見 eval/README.md）
+python train_subject.py --data datasets/train.jsonl datasets/external.jsonl --weight 0.25 --prior-power 0.15
+python train_subject.py --write-fixtures gca-rs/tests/subject_fixtures.json \
+    --fixture-data datasets/test_unseen_recent.jsonl
+python eval/evaluate_subject.py --sets datasets/test_*.jsonl
 cd gca-rs && cargo test --release && cargo build --release --bin gca
 ```
 
@@ -282,8 +313,6 @@ CI 在每次 push 時執行這些檢查（Rust 部分在 Windows、macOS、Linux
 
 - 其他 commit 也離線草擬摘要：由內建小模型接在已選的類型與 scope 後面補完
   （機械性的 commit 已經有[草稿](#摘要草稿)）
-- 也從摘要判斷類型：「speed up」「rename」這類字眼說出了 diff 常看不出的意圖，
-  預期對 `refactor`、`perf` 幫助最大
 - 依使用者在自己儲存庫的選擇做本地微調，先從用各儲存庫自己的類型分佈校正開始
 - 讀取專案的 commitlint 設定（自訂類型、header 長度）
 - 改善 `refactor` / `perf`：加入「行為是否改變」相關的特徵

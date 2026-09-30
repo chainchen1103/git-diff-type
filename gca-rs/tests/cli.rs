@@ -311,6 +311,29 @@ fn mechanical_changes_get_a_subject_draft() {
 }
 
 #[test]
+fn the_subject_steers_the_suggested_type() {
+    let repo = Repo::new();
+    repo.write(
+        "src/lib.rs",
+        "pub fn one() -> u32 {\n    let n = 1;\n    n\n}\n",
+    );
+    repo.git(&["add", "-A"]);
+
+    let v = json(&repo.gca(&["--dry-run", "--json"]));
+    assert!(v["ranked_with_subject"].is_null(), "{v}");
+    assert_ne!(v["suggestions"][0]["type"], "perf");
+
+    let v = json(&repo.gca(&["--dry-run", "--json", "-m", "make one faster"]));
+    assert_eq!(v["ranked_with_subject"], "make one faster");
+    assert_eq!(v["suggestions"][0]["type"], "perf");
+
+    // --yes takes the type the diff and the subject suggest together.
+    let out = repo.gca(&["-y", "-m", "make one faster"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(repo.head_message(), "perf: make one faster");
+}
+
+#[test]
 fn ordinary_changes_get_no_subject_draft() {
     let repo = Repo::new();
     repo.write("src/lib.rs", "pub fn one() -> u32 {\n    2\n}\n");

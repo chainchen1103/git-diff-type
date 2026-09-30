@@ -1,0 +1,21 @@
+{
+  "commits": 437945,
+  "labels": {
+    "fix": 128219,
+    "feat": 84737,
+    "chore": 64801,
+    "docs": 46886,
+    "refactor": 37082,
+    "test": 24902,
+    "build": 19428,
+    "ci": 14304,
+    "style": 8321,
+    "perf": 7923,
+    "revert": 1342
+  },
+  "C": 0.5,
+  "max_features": 30000,
+  "weight": 0.25,
+  "prior_power": 0.15,
+  "max_export_gap": 2.5636809863338605e-06
+}

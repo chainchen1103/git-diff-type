@@ -8,6 +8,7 @@ mod heuristics;
 mod history;
 mod message;
 mod model;
+mod subject;
 
 use anyhow::{bail, Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
@@ -23,6 +24,7 @@ use draft::Draft;
 use git::FileChange;
 use history::ScopeHint;
 use model::Model;
+use subject::SubjectModel;
 
 const PUSH_KEY: &str = "gca.push";
 const REMOTE_KEY: &str = "gca.remote";
@@ -265,13 +267,25 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
 
     let model = load_model(cli.model.as_deref())?;
     let drafted = draft::draft(&change.files, &change.diff);
-    let (ranked, preselect) = rank(&model, &change, drafted.as_ref(), cli.topk.into())?;
+    // The subject, when it is known before the type: -m, or else the draft.
+    let subject = cli
+        .message
+        .first()
+        .map(|m| m.trim())
+        .filter(|m| !m.is_empty())
+        .or(drafted.as_ref().map(|d| d.subject.as_str()));
+    let Ranking {
+        types: ranked,
+        preselect,
+        with_subject,
+    } = rank(&model, &change, drafted.as_ref(), subject, cli.topk.into())?;
     let paths: Vec<String> = change.files.iter().map(|f| f.path.clone()).collect();
     let hint = history::scope_hint(&git::recent_log(history::DEPTH), &paths);
 
     if cli.dry_run {
         if cli.json {
-            print_json(&change, &ranked, preselect, &hint, drafted.as_ref())?;
+            let used = subject.filter(|_| with_subject);
+            print_json(&change, &ranked, preselect, &hint, drafted.as_ref(), used)?;
         } else {
             print!("{}", summary(&change));
             for (i, (label, p)) in ranked.iter().enumerate() {
@@ -464,15 +478,26 @@ fn load_model(path: Option<&Path>) -> Result<Model> {
     }
 }
 
-/// Top suggestions and which one to pre-select. A path rule (docs, test, ci)
-/// or the type a subject draft implies (a release is `chore`) is pre-selected
-/// even when the model ranks it lower, as long as the model knows that type.
+struct Ranking<'m> {
+    /// The top suggestions and their probabilities.
+    types: Vec<(&'m str, f64)>,
+    /// Which one to pre-select.
+    preselect: usize,
+    /// Whether the subject was taken into account.
+    with_subject: bool,
+}
+
+/// A known subject's model is combined with the diff model's. A path rule
+/// (docs, test, ci) or the type a subject draft implies (a release is
+/// `chore`) is pre-selected even when ranked lower, as long as the model
+/// knows that type.
 fn rank<'m>(
     model: &'m Model,
     change: &Change,
     drafted: Option<&Draft>,
+    subject: Option<&str>,
     topk: usize,
-) -> Result<(Vec<(&'m str, f64)>, usize)> {
+) -> Result<Ranking<'m>> {
     let diff: String = change.diff.chars().take(MAX_DIFF_CHARS).collect();
     let s = &change.stats;
     let numeric = [
@@ -481,9 +506,17 @@ fn rank<'m>(
         s.deletions as f64,
         s.additions as f64 / (s.deletions as f64 + 1.0),
     ];
-    let probs = model
+    let mut probs = model
         .predict_proba(&model.build_features(&diff, numeric))
         .context("model inference failed")?;
+    let mut with_subject = false;
+    if let Some(subject) = subject {
+        let subjects = SubjectModel::embedded().context("the built-in subject model is invalid")?;
+        if let Some(combined) = subjects.combine(&model.payload.classes, &probs, subject) {
+            probs = combined;
+            with_subject = true;
+        }
+    }
     let mut ranked = model.topk(&probs, topk);
     let paths: Vec<String> = change.files.iter().map(|f| f.path.clone()).collect();
     let rule = heuristics::classify(&paths)
@@ -499,7 +532,11 @@ fn rank<'m>(
                 ranked.len() - 1
             }),
     };
-    Ok((ranked, preselect))
+    Ok(Ranking {
+        types: ranked,
+        preselect,
+        with_subject,
+    })
 }
 
 /// The ranked types, plus "other type" for the rest. `None` if cancelled.
@@ -585,6 +622,7 @@ fn print_json(
     preselect: usize,
     hint: &ScopeHint,
     drafted: Option<&Draft>,
+    ranked_with_subject: Option<&str>,
 ) -> Result<()> {
     let files: Vec<_> = change
         .files
@@ -610,6 +648,7 @@ fn print_json(
         "scope": hint.suggestion,
         "repo_uses_scopes": hint.repo_uses_scopes,
         "subject_draft": drafted.map(|d| d.subject.as_str()),
+        "ranked_with_subject": ranked_with_subject,
     });
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())

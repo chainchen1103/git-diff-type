@@ -101,8 +101,9 @@ If nothing is staged, gca does not stage anything for you; it shows
 
 The prompts:
 
-1. **Type**, ranked by probability. Enter accepts the pre-selected one;
-   "other type…" lists the rest.
+1. **Type**, ranked by probability. When the subject is already known, from
+   `-m` or a [draft](#subject-drafts), the ranking reads it as well as the
+   diff. Enter accepts the pre-selected one; "other type…" lists the rest.
 2. **Scope**, only if the project uses scopes. It is pre-filled with **the
    scope used most often for these files**, learned from the last 500 commits
    (bot commits ignored). Edit or clear it.
@@ -140,6 +141,10 @@ Without prompts, for scripts: `gca -a -t fix -m "handle empty diff"`, adding
 `--scope <scope>` (or `--scope ""` for none) in a project that uses scopes, or
 `gca -y -m "update guide"` to take the suggested type and scope. Without a
 terminal, gca names the flags it still needs instead of hanging.
+
+A subject given with `-m` counts toward the suggested type, which makes the
+first suggestion right far more often; see
+[With the subject](#with-the-subject).
 
 Exit codes: `0` committed (or dry run done), `1` nothing to commit, cancelled
 or git failed, `2` bad arguments, `130` Ctrl-C.
@@ -236,6 +241,33 @@ changes in *intent*, which the diff rarely shows. That is why gca offers a
 ranked list instead of deciding for you; review the suggestion before you
 commit.
 
+### With the subject
+
+When the subject is known before the type, from `-m` or a
+[draft](#subject-drafts), gca reads it too: words such as "speed up" or
+"rename" state the intent the diff hides. On the same commits, with the subject
+each author wrote (without its type prefix):
+
+| Test set | Diff only | Subject only | Both, as gca combines them |
+| --- | ---: | ---: | ---: |
+| **Projects never seen**, after training | 43.5% · 85.9% · 42.9% | 58.0% · 86.6% · 36.5% | **61.3% · 90.4% · 50.8%** |
+| Projects never seen, older history | 44.6% · 83.7% · 36.2% | 55.1% · 85.7% · 34.8% | 57.9% · 88.4% · 45.5% |
+| Projects seen in training, after training | 58.0% · 89.7% · 44.9% | 60.5% · 88.2% · 38.7% | 67.9% · 93.6% · 52.0% |
+
+Each cell is first suggestion right · right type in top 3 · average recall per
+type. On the first row, `refactor` commits get their own type first 26.6% of
+the time instead of never, and `perf` 18.4% instead of 2.7%. The types the
+file paths already reveal lose a little (`docs` 77.7% → 75.7%, `ci`
+77.9% → 76.7%), `test` more (71.2% → 58.7%); the path rule still pre-selects
+those three when every file fits.
+
+The subject model is logistic regression over words and pairs of words,
+trained on the subjects of the same commits as the diff model
+(`train_subject.py`). gca multiplies the two models' probabilities, with the
+subject's raised to the power 0.25 and each type's training frequency divided
+out to the power 0.15. Both settings were chosen on six training projects held
+out for the purpose, not on the test sets.
+
 Full numbers and how to reproduce them: [eval/README.md](eval/README.md).
 
 ## How it works
@@ -253,12 +285,16 @@ Full numbers and how to reproduce them: [eval/README.md](eval/README.md).
    types. Only the first 20,000 characters of a diff are read. Each
    probability is then corrected for how common the type was in training
    (`eval/tune_prior.py`); otherwise most diffs would be called `fix`, and
-   `refactor` or `perf` would almost never come first.
+   `refactor` or `perf` would almost never come first. A second, smaller
+   model reads the subject when it is known before the type:
+   logistic regression over its words and pairs of words
+   (`train_subject.py`, see [With the subject](#with-the-subject)).
 3. **Export.** `export_model.py` flattens the whole sklearn pipeline into
-   `out/model_v2.json`.
-4. **Inference.** The Rust CLI embeds that JSON at build time and reimplements
-   the forward pass, so the installed CLI needs git but no Python or model
-   file. `gca-rs/tests/parity.rs` checks that Rust matches Python within 1e-6.
+   `out/model_v2.json`; `train_subject.py` writes `out/subject_model.json`.
+4. **Inference.** The Rust CLI embeds both JSON files at build time and
+   reimplements the forward passes, so the installed CLI needs git but no
+   Python or model file. `gca-rs/tests/parity.rs` checks that Rust matches
+   Python within 1e-6 (1e-9 for the subject model).
    After exporting new weights, rebuild the CLI or pass the JSON with `--model`.
 
 gca always reads the diff in git's default format, whatever personal settings
@@ -284,6 +320,11 @@ python verify_export.py --data datasets/test_unseen_recent.jsonl
 python gca-rs/gen_fixtures.py --synthetic --out gca-rs/tests/synthetic_fixtures.json
 python gca-rs/gen_fixtures.py --data datasets/test_unseen_recent.jsonl
 bash eval/run.sh                        # score the three test sets
+python eval/tune_fusion.py ...          # how much the subject counts (eval/README.md)
+python train_subject.py --data datasets/train.jsonl datasets/external.jsonl --weight 0.25 --prior-power 0.15
+python train_subject.py --write-fixtures gca-rs/tests/subject_fixtures.json \
+    --fixture-data datasets/test_unseen_recent.jsonl
+python eval/evaluate_subject.py --sets datasets/test_*.jsonl
 cd gca-rs && cargo test --release && cargo build --release --bin gca
 ```
 
@@ -332,8 +373,6 @@ builds the installer on Windows.
 - Draft the subject of other commits too, still offline: a small built-in
   model that completes the subject after the chosen type and scope (mechanical
   commits already get [drafts](#subject-drafts))
-- Suggest the type from the subject too: words such as "speed up" or "rename"
-  state the intent a diff often hides, which should help `refactor` and `perf` most
 - Adapt locally to the types a user picks in their own repositories, starting
   with each repository's own mix of types
 - Read the project's commitlint config (custom types, header length)

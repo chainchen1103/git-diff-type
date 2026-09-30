@@ -202,7 +202,7 @@ impl Model {
     }
 }
 
-fn token_regex(pattern: &str) -> Result<Regex, regex::Error> {
+pub fn token_regex(pattern: &str) -> Result<Regex, regex::Error> {
     // sklearn's default \w excludes combining marks and includes all numeric characters.
     let pattern = match pattern {
         r"(?u)\b\w\w+\b" | r"\b\w\w+\b" => r"[\p{L}\p{N}_]{2,}",
