@@ -500,7 +500,11 @@ builds the installer on Windows.
   model that completes the subject after the chosen type and scope (mechanical
   commits already get [drafts](#subject-drafts))
 - Better `refactor` / `perf` with features about whether behavior changed
-- Notice staged changes that mix unrelated work and suggest splitting them
+- Notice staged changes that mix unrelated work and suggest splitting them.
+  Grouping the files by directory, by name and by what was committed
+  together is not enough: on the unseen projects it would flag 12.4% of real
+  commits, and only 39.8% of two consecutive commits by one author put
+  together (`eval/split_signal.py`)
 - Suggest `!` for breaking changes. Spotting removed exports is not enough:
   on the unseen projects only 0.5% of commits are marked breaking, and of the
   3.7% that remove a public definition, 4.1% are (`eval/breaking_signal.py`)

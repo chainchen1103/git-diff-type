@@ -399,7 +399,8 @@ CI 在每次 push 時執行這些檢查（Rust 部分在 Windows、macOS、Linux
 - 其他 commit 也離線草擬摘要：由內建小模型接在已選的類型與 scope 後面補完
   （機械性的 commit 已經有[草稿](#摘要草稿)）
 - 改善 `refactor` / `perf`：加入「行為是否改變」相關的特徵
-- 發現暫存內容混雜了不相關的變更時，建議拆成幾個 commit
+- 發現暫存內容混雜了不相關的變更時，建議拆成幾個 commit。只靠目錄、檔名和過去一起 commit 的紀錄來分組不夠：
+  在沒看過的專案上，它會把 12.4% 的真實 commit 標成混雜，而同一作者前後兩個 commit 合在一起時，只抓得到 39.8%（`eval/split_signal.py`）
 - 破壞性變更時建議加上 `!`。只看有沒有刪掉 export 不夠：在沒看過的專案上，只有 0.5% 的 commit 標了破壞性變更，
   而刪除公開定義的 3.7% commit 裡，只有 4.1% 標了（`eval/breaking_signal.py`）
 
