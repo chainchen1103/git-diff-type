@@ -179,14 +179,16 @@ gave them (bot commits left out). The ranking is tilted toward that mix:
 
 where prior is the mix of types in the training data. A project that uses
 types as the training data did keeps its ranking; one with no Conventional
-Commits in its history is not affected.
+Commits in its history is not affected. The ranking is then tilted the same
+way toward the mix of the commits among those 500 that touched a file being
+committed, smoothed with 5 commits' worth of the prior instead of 10.
 
 `eval/history_sim.py` rebuilds that history from the datasets: for each
-commit, the 500 commits before it in the same repository by commit time. On
-the six held-out training projects (`eval/tune_history.py`, with the
-held-out diff and subject models; a median of 500 typed commits before each
-commit), first suggestion right / right type in top 3 / average recall per
-type:
+commit, the 500 commits before it in the same repository by commit time, and
+the files each of them touched, read from its diff. On the six held-out
+training projects (`eval/tune_history.py`, with the held-out diff and
+subject models; a median of 500 typed commits before each commit), first
+suggestion right / right type in top 3 / average recall per type:
 
 | Weight | Diff | Diff and subject |
 | ---: | ---: | ---: |
@@ -199,19 +201,40 @@ type:
 | 0.3 | 45.7% / 85.6% / 37.0% | 62.2% / 92.2% / 47.2% |
 
 The shipped weights are the best first suggestion for each: 0.1 without a
-subject and 0.25 with one. On the test sets (`results_history.json`; for
-`test_seen_recent` the history includes the training projects' older
-commits, passed with `--history datasets/train.jsonl`):
+subject and 0.25 with one. With them, the same files' mix (86.5% of these
+commits have earlier commits to the same files, a median of 6):
 
-| Set | Diff | Diff and history | Diff and subject | Diff, subject and history |
-| --- | ---: | ---: | ---: | ---: |
-| Unseen projects, after training | 43.5% · 85.9% · 42.9% | 51.1% · 89.9% · 48.0% | 61.3% · 90.4% · 50.8% | **66.9% · 93.7% · 55.1%** |
-| Unseen projects, older history | 44.6% · 83.7% · 36.2% | 51.0% · 88.1% · 38.9% | 57.9% · 88.4% · 45.5% | 63.1% · 92.5% · 47.2% |
-| Training projects, after training | 58.0% · 89.7% · 44.9% | 58.1% · 91.6% · 46.8% | 67.9% · 93.6% · 52.0% | 68.0% · 94.4% · 53.7% |
+| Weight | Diff | Diff and subject |
+| ---: | ---: | ---: |
+| none | 50.5% / 87.2% / 41.3% | 62.6% / 92.3% / 47.6% |
+| 0.05 | 53.2% / 88.4% / 43.3% | 63.6% / 92.6% / 49.2% |
+| 0.1 | **53.4% / 89.2% / 44.5%** | 64.5% / 92.9% / 50.3% |
+| 0.15 | 52.8% / 89.1% / 45.1% | **64.7% / 93.0% / 50.6%** |
+| 0.2 | 52.0% / 89.0% / 45.2% | 64.7% / 92.9% / 51.1% |
+| 0.3 | 50.2% / 88.5% / 45.2% | 63.8% / 92.7% / 51.4% |
 
-The datasets hold only Conventional Commits, so the simulated history has
-500 typed commits where a real log's 500 may have fewer; fewer commits move
-the ranking less.
+The shipped weights are again the best first suggestion for each: 0.1
+without a subject and 0.15 with one. The smoothing matters little: with 2 or
+10 commits' worth instead of 5, the best first suggestion is 53.5% or 53.4%
+without a subject and 64.8% or 64.7% with one.
+
+On the test sets (`results_history.json`; for `test_seen_recent` the history
+includes the training projects' older commits, passed with
+`--history datasets/train.jsonl`), each with the project's mix and then the
+same files' mix too:
+
+| Set | Diff | + project | + same files | Diff and subject | + project | + same files |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Unseen projects, after training | 43.5% · 85.9% · 42.9% | 51.1% · 89.9% · 48.0% | 55.7% · 91.4% · 53.0% | 61.3% · 90.4% · 50.8% | 66.9% · 93.7% · 55.1% | **67.8% · 94.2% · 58.5%** |
+| Unseen projects, older history | 44.6% · 83.7% · 36.2% | 51.0% · 88.1% · 38.9% | 54.6% · 90.0% · 42.4% | 57.9% · 88.4% · 45.5% | 63.1% · 92.5% · 47.2% | 64.6% · 93.4% · 50.3% |
+| Training projects, after training | 58.0% · 89.7% · 44.9% | 58.1% · 91.6% · 46.8% | 59.9% · 92.6% · 50.2% | 67.9% · 93.6% · 52.0% | 68.0% · 94.4% · 53.7% | 68.5% · 94.8% · 55.1% |
+
+82.4%, 88.7% and 77.7% of those commits have earlier commits to the same
+files. The datasets hold only Conventional Commits, so the simulated history
+has 500 typed commits where a real log's 500 may have fewer; fewer commits
+move the ranking less. The file lists come from the stored diffs, which the
+miner cuts at 20,000 characters, so a large commit's later files are missing
+from the simulation; gca reads the full lists from git.
 
 ## Reproduce
 

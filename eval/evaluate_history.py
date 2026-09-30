@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Score the ranking with the project's own mix of types (gca-rs/src/history.rs).
+"""Score the ranking with the project's own history (gca-rs/src/history.rs).
 
 For each commit by people in the held-out sets, the types of the 500 commits
-before it in the same repository tilt the ranking, as gca does with the
-repository's log. Reports the diff model alone and with the subject, each
-without and with that history.
+before it in the same repository tilt the ranking, and then the types of
+those that touched a file it touches, as gca does with the repository's log.
+Reports the diff model alone and with the subject, each without history,
+with the project's mix, and with the same files' mix too.
 
 Usage:
     python eval/evaluate_history.py \\
@@ -29,12 +30,13 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "eval"))
 from dedupe import iter_rows  # noqa: E402
 from evaluate_subject import score  # noqa: E402
-from history_sim import counts_before, timelines, weigh  # noqa: E402
+from history_sim import FILE_PSEUDO_COMMITS, counts_before, timelines, weigh  # noqa: E402
 from train_enhanced import FEATURE_COLUMNS, prepare_features  # noqa: E402
 from train_subject import Exported, subject_of  # noqa: E402
 
 # As in gca-rs/src/history.rs.
 WEIGHT, WEIGHT_WITH_SUBJECT = 0.1, 0.25
+FILE_WEIGHT, FILE_WEIGHT_WITH_SUBJECT = 0.1, 0.15
 
 
 def main():
@@ -62,16 +64,23 @@ def main():
         y = np.array([r["label"] for r in rows])
         p_diff = diff_model.predict_proba(prepare_features(pd.DataFrame(rows), 20000)[FEATURE_COLUMNS])
         p_both = np.array([subject_model.combine(d, subject_of(r.get("message"))) for d, r in zip(p_diff, rows)])
-        n = counts_before(by_repo, rows, classes)
+        n, same = counts_before(by_repo, rows, classes)
         log_diff, log_both = np.log(p_diff + 1e-12), np.log(p_both + 1e-12)
+        diff_history = weigh(log_diff, n, prior, WEIGHT)
+        both_history = weigh(log_both, n, prior, WEIGHT_WITH_SUBJECT)
         name = Path(path).stem
         results[name] = {
             "commits": len(rows),
             "median_history": float(np.median(n.sum(axis=1))),
+            "with_same_file_history": float(np.mean(same.sum(axis=1) > 0)),
             "diff": score(log_diff, classes, y),
-            "diff_history": score(weigh(log_diff, n, prior, WEIGHT), classes, y),
+            "diff_history": score(diff_history, classes, y),
+            "diff_history_files": score(weigh(diff_history, same, prior, FILE_WEIGHT, FILE_PSEUDO_COMMITS),
+                                        classes, y),
             "both": score(log_both, classes, y),
-            "both_history": score(weigh(log_both, n, prior, WEIGHT_WITH_SUBJECT), classes, y),
+            "both_history": score(both_history, classes, y),
+            "both_history_files": score(weigh(both_history, same, prior, FILE_WEIGHT_WITH_SUBJECT,
+                                              FILE_PSEUDO_COMMITS), classes, y),
         }
         line = "  ".join(f"{k} {v['top1']:.1%} / {v['top3']:.1%} / {v['macro_recall']:.3f}"
                          for k, v in results[name].items() if isinstance(v, dict))

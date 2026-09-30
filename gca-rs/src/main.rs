@@ -17,7 +17,6 @@ use clap::{CommandFactory, Parser, Subcommand};
 use console::style;
 use dialoguer::theme::{ColorfulTheme, SimpleTheme, Theme};
 use dialoguer::{Completion, Confirm, Input, Select};
-use std::collections::HashMap;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -346,12 +345,14 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
         .filter(|m| !m.is_empty())
         .or(drafted.as_ref().map(|d| d.subject.as_str()));
     let log = git::recent_log(history::DEPTH);
-    let habits = history::type_counts(&log);
+    let paths: Vec<String> = change.files.iter().map(|f| f.path.clone()).collect();
+    let habits = history::habits(&log, &paths);
     let Ranking {
         types: ranked,
         preselect,
         with_subject,
         with_history,
+        with_file_history,
     } = rank(
         &model,
         &change,
@@ -361,7 +362,6 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
         &rules,
         cli.topk.into(),
     )?;
-    let paths: Vec<String> = change.files.iter().map(|f| f.path.clone()).collect();
     let hint = history::scope_hint(&log, &paths);
 
     if cli.dry_run {
@@ -371,6 +371,7 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
                 drafted: drafted.as_ref(),
                 ranked_with_subject: subject.filter(|_| with_subject),
                 ranked_with_history: with_history,
+                ranked_with_file_history: with_file_history,
                 rules: &rules,
             };
             print_json(&change, &ranked, preselect, &extras)?;
@@ -635,7 +636,8 @@ fn hook_run(file: &Path, source: Option<&str>) -> Result<()> {
         hook::Source::Editor => draft_subject,
     };
     let log = git::recent_log(history::DEPTH);
-    let habits = history::type_counts(&log);
+    let paths: Vec<String> = change.files.iter().map(|f| f.path.clone()).collect();
+    let habits = history::habits(&log, &paths);
     let rules = project_rules();
     let ranking = rank(
         &model,
@@ -646,7 +648,6 @@ fn hook_run(file: &Path, source: Option<&str>) -> Result<()> {
         &rules,
         3,
     )?;
-    let paths: Vec<String> = change.files.iter().map(|f| f.path.clone()).collect();
     let hint = history::scope_hint(&log, &paths);
     let scope = hint.suggestion.filter(|_| hint.repo_uses_scopes);
     let kind = ranking.types[ranking.preselect].0;
@@ -691,11 +692,14 @@ struct Ranking<'m> {
     with_subject: bool,
     /// How many of the project's recent typed commits were taken into account.
     with_history: usize,
+    /// How many of those touched a file in this change.
+    with_file_history: usize,
 }
 
 /// A known subject's model is combined with the diff model's, the result is
-/// tilted toward the types the project itself uses, and types its commitlint
-/// config does not allow drop out. A path rule
+/// tilted toward the types the project itself uses and then toward the ones
+/// its commits to the same files used, and types its commitlint config does
+/// not allow drop out. A path rule
 /// (docs, test, ci) or the type a subject draft implies (a release is
 /// `chore`) is pre-selected even when ranked lower, as long as the model
 /// knows that type.
@@ -704,7 +708,7 @@ fn rank<'m>(
     change: &Change,
     drafted: Option<&Draft>,
     subject: Option<&str>,
-    habits: &HashMap<String, usize>,
+    habits: &history::Habits,
     rules: &'m Rules,
     topk: usize,
 ) -> Result<Ranking<'m>> {
@@ -727,15 +731,37 @@ fn rank<'m>(
             with_subject = true;
         }
     }
-    let weight = if with_subject {
-        history::HABIT_WEIGHT_WITH_SUBJECT
+    let (weight, file_weight) = if with_subject {
+        (
+            history::HABIT_WEIGHT_WITH_SUBJECT,
+            history::FILE_HABIT_WEIGHT_WITH_SUBJECT,
+        )
     } else {
-        history::HABIT_WEIGHT
+        (history::HABIT_WEIGHT, history::FILE_HABIT_WEIGHT)
     };
+    let classes = &model.payload.classes;
     let mut with_history = 0;
-    if let Some(tilted) = history::weigh_by_habits(&model.payload.classes, &probs, habits, weight) {
+    if let Some(tilted) = history::weigh_by_habits(
+        classes,
+        &probs,
+        &habits.project,
+        weight,
+        history::PROJECT_PSEUDO_COMMITS,
+    ) {
         probs = tilted;
-        with_history = habits.values().sum();
+        with_history = habits.project.values().sum();
+    }
+    // Then toward the types of the commits that touched the same files.
+    let mut with_file_history = 0;
+    if let Some(tilted) = history::weigh_by_habits(
+        classes,
+        &probs,
+        &habits.same_files,
+        file_weight,
+        history::FILE_PSEUDO_COMMITS,
+    ) {
+        probs = tilted;
+        with_file_history = habits.same_files.values().sum();
     }
     // Types the project's commitlint config does not allow drop out.
     if rules.types.is_some() {
@@ -783,6 +809,7 @@ fn rank<'m>(
         preselect,
         with_subject,
         with_history,
+        with_file_history,
     })
 }
 
@@ -870,6 +897,7 @@ struct JsonExtras<'a> {
     drafted: Option<&'a Draft>,
     ranked_with_subject: Option<&'a str>,
     ranked_with_history: usize,
+    ranked_with_file_history: usize,
     rules: &'a Rules,
 }
 
@@ -884,6 +912,7 @@ fn print_json(
         drafted,
         ranked_with_subject,
         ranked_with_history,
+        ranked_with_file_history,
         rules,
     } = extras;
     let files: Vec<_> = change
@@ -912,6 +941,7 @@ fn print_json(
         "subject_draft": drafted.map(|d| d.subject.as_str()),
         "ranked_with_subject": ranked_with_subject,
         "ranked_with_history": ranked_with_history,
+        "ranked_with_file_history": ranked_with_file_history,
         "commitlint": rules.file.as_ref().map(|file| serde_json::json!({
             "config": file.display().to_string(),
             "types": rules.types,

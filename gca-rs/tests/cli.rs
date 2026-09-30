@@ -508,6 +508,53 @@ fn the_project_s_own_types_tilt_the_ranking() {
 }
 
 #[test]
+fn the_types_of_commits_to_the_same_files_tilt_the_ranking() {
+    // Two projects with the same mix of types and the same staged change;
+    // only the type their commits to src/lib.rs had differs.
+    let perf_probability = |to_lib: &str, elsewhere: &str| {
+        let repo = Repo::new();
+        for i in 0..10 {
+            repo.write(
+                "src/lib.rs",
+                &format!("pub fn one() -> u32 {{\n    {i}\n}}\n"),
+            );
+            repo.git(&["add", "-A"]);
+            repo.git(&["commit", "-q", "-m", &format!("{to_lib}: lib step {i}")]);
+            repo.write("notes.txt", &format!("{i}\n"));
+            repo.git(&["add", "-A"]);
+            repo.git(&[
+                "commit",
+                "-q",
+                "-m",
+                &format!("{elsewhere}: notes step {i}"),
+            ]);
+        }
+        repo.write(
+            "src/lib.rs",
+            "pub fn one() -> u32 {\n    let n = 9;\n    n\n}\n\npub fn two() -> u32 {\n    2\n}\n",
+        );
+        repo.git(&["add", "-A"]);
+        let v = json(&repo.gca(&["--dry-run", "--json", "--topk", "11"]));
+        assert_eq!(v["ranked_with_history"], 21);
+        // the ten commits to src/lib.rs and the initial one
+        assert_eq!(v["ranked_with_file_history"], 11);
+        v["suggestions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["type"] == "perf")
+            .unwrap()["probability"]
+            .as_f64()
+            .unwrap()
+    };
+    let (perf_file, fix_file) = (
+        perf_probability("perf", "fix"),
+        perf_probability("fix", "perf"),
+    );
+    assert!(perf_file > 1.3 * fix_file, "{perf_file} vs {fix_file}");
+}
+
+#[test]
 fn a_commitlint_config_sets_the_types_and_the_header_limit() {
     let repo = Repo::new();
     repo.write(

@@ -4,6 +4,20 @@
 
 ### Added
 
+- **The commits to the same files count toward the type.** Of the last 500
+  commits, gca takes the ones that touched a file you are committing and
+  tilts the ranking toward their types too, after the project's own mix. On
+  recent commits of projects gca never saw, the first suggestion is right
+  55.7% of the time instead of 51.1% with the project's mix alone, and 67.8%
+  instead of 66.9% with the subject. `--dry-run --json` reports how many
+  commits touched those files as `ranked_with_file_history`.
+  `eval/tune_history.py` chose the weights and `eval/evaluate_history.py`
+  scores them.
+
+## 0.3.0
+
+### Added
+
 - **commitlint configs.** gca follows a project's `type-enum` and
   `header-max-length` rules: it suggests only allowed types, offers the
   project's own types under "other type…" and with `-t`, and uses the

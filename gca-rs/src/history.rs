@@ -80,24 +80,40 @@ pub fn scope_hint(log: &[LogEntry], files: &[String]) -> ScopeHint {
     }
 }
 
-/// How many of the recent commits people gave each type.
-pub fn type_counts(log: &[LogEntry]) -> HashMap<String, usize> {
-    let mut counts = HashMap::new();
+/// The types people gave the recent commits: all of them, and the ones that
+/// touched a file that is staged now.
+#[derive(Debug, Default, PartialEq)]
+pub struct Habits {
+    pub project: HashMap<String, usize>,
+    pub same_files: HashMap<String, usize>,
+}
+
+pub fn habits(log: &[LogEntry], files: &[String]) -> Habits {
+    let staged: HashSet<&str> = files.iter().map(String::as_str).collect();
+    let mut habits = Habits::default();
     for entry in log.iter().filter(|e| !is_bot(&e.author)) {
-        if let Some((kind, _)) = message::parse_subject(&entry.subject) {
-            *counts.entry(kind.to_string()).or_insert(0) += 1;
+        let Some((kind, _)) = message::parse_subject(&entry.subject) else {
+            continue;
+        };
+        *habits.project.entry(kind.to_string()).or_insert(0) += 1;
+        if entry.files.iter().any(|f| staged.contains(f.as_str())) {
+            *habits.same_files.entry(kind.to_string()).or_insert(0) += 1;
         }
     }
-    counts
+    habits
 }
 
 /// How much the project's own mix of types counts, without and with a known
-/// subject. Chosen on projects held out from training (eval/tune_history.py).
+/// subject, and then the mix in the commits that touched the same files.
+/// Chosen on projects held out from training (eval/tune_history.py).
 pub const HABIT_WEIGHT: f64 = 0.1;
 pub const HABIT_WEIGHT_WITH_SUBJECT: f64 = 0.25;
-/// The project's mix is smoothed with this many commits' worth of the
-/// training mix, so a short history moves the ranking little.
-const PSEUDO_COMMITS: f64 = 10.0;
+pub const FILE_HABIT_WEIGHT: f64 = 0.1;
+pub const FILE_HABIT_WEIGHT_WITH_SUBJECT: f64 = 0.15;
+/// Each mix is smoothed with this many commits' worth of the training mix,
+/// so a short history moves the ranking little.
+pub const PROJECT_PSEUDO_COMMITS: f64 = 10.0;
+pub const FILE_PSEUDO_COMMITS: f64 = 5.0;
 
 /// Commits of each type the models were trained on (out/train_report.json).
 const TRAINING_MIX: [(&str, f64); 11] = [
@@ -114,15 +130,17 @@ const TRAINING_MIX: [(&str, f64); 11] = [
     ("revert", 1342.0),
 ];
 
-/// `p ∝ p · (q / π)^weight`: q is the project's mix of types, smoothed
-/// toward the training mix π, so a project that uses the types as the
-/// training data did keeps its ranking. `None` without typed history, or
-/// for a model with types the training mix does not have.
+/// `p ∝ p · (q / π)^weight`: q is a mix of types from the history, smoothed
+/// toward the training mix π with `pseudo` commits' worth of it, so history
+/// that uses the types as the training data did keeps the ranking. `None`
+/// without typed history, or for a model with types the training mix does
+/// not have.
 pub fn weigh_by_habits(
     classes: &[String],
     probs: &[f64],
     counts: &HashMap<String, usize>,
     weight: f64,
+    pseudo: f64,
 ) -> Option<Vec<f64>> {
     let total_train: f64 = TRAINING_MIX.iter().map(|(_, n)| n).sum();
     let prior: Vec<f64> = classes
@@ -147,7 +165,7 @@ pub fn weigh_by_habits(
         .zip(&n)
         .zip(&prior)
         .map(|((p, n), pi)| {
-            let q = (n + PSEUDO_COMMITS * pi) / (total + PSEUDO_COMMITS);
+            let q = (n + pseudo * pi) / (total + pseudo);
             (p + 1e-12).ln() + weight * (q / pi).ln()
         })
         .collect();
@@ -200,11 +218,25 @@ mod tests {
             by("Ada <a@x>", "Merge branch 'x'"),
             by("Ada <a@x>", "WIP: nothing"),
         ];
-        let counts = type_counts(&log);
+        let counts = habits(&log, &[]).project;
         assert_eq!(counts.get("fix"), Some(&2));
         assert_eq!(counts.get("perf"), Some(&1));
         assert_eq!(counts.get("chore"), None);
         assert_eq!(counts.values().sum::<usize>(), 3);
+    }
+
+    #[test]
+    fn habits_of_the_same_files() {
+        let log = [
+            entry("docs(site): guide", &["site/guide.md", "site/nav.ts"]),
+            entry("feat(site): search", &["site/search.ts"]),
+            entry("fix: nav", &["site/nav.ts"]),
+        ];
+        let h = habits(&log, &staged(&["site/nav.ts"]));
+        assert_eq!(h.project.values().sum::<usize>(), 3);
+        assert_eq!(h.same_files.get("docs"), Some(&1));
+        assert_eq!(h.same_files.get("fix"), Some(&1));
+        assert_eq!(h.same_files.get("feat"), None);
     }
 
     #[test]
@@ -213,20 +245,20 @@ mod tests {
         let total: f64 = TRAINING_MIX.iter().map(|(_, n)| n).sum();
         let flat = vec![1.0 / classes.len() as f64; classes.len()];
         // no typed history: nothing to learn
-        assert!(weigh_by_habits(&classes, &flat, &HashMap::new(), 0.25).is_none());
+        assert!(weigh_by_habits(&classes, &flat, &HashMap::new(), 0.25, 10.0).is_none());
         // a project that uses types in the training proportions keeps its ranking
         let same: HashMap<String, usize> = TRAINING_MIX
             .iter()
             .map(|(k, n)| (k.to_string(), (n / total * 10_000.0).round() as usize))
             .collect();
-        let kept = weigh_by_habits(&classes, &flat, &same, 0.25).unwrap();
+        let kept = weigh_by_habits(&classes, &flat, &same, 0.25, 10.0).unwrap();
         for p in &kept {
             assert!((p - flat[0]).abs() < 1e-3, "{kept:?}");
         }
         // a project that writes many perf commits lifts perf
         let perf: HashMap<String, usize> =
             [("perf".to_string(), 200), ("fix".to_string(), 50)].into();
-        let tilted = weigh_by_habits(&classes, &flat, &perf, 0.25).unwrap();
+        let tilted = weigh_by_habits(&classes, &flat, &perf, 0.25, 10.0).unwrap();
         let at = |k: &str| tilted[classes.iter().position(|c| c == k).unwrap()];
         assert!(
             at("perf") > at("fix") && at("fix") > at("feat"),
@@ -235,7 +267,7 @@ mod tests {
         assert!((tilted.iter().sum::<f64>() - 1.0).abs() < 1e-12);
         // a model with other types is left alone
         let other = vec!["feat".to_string(), "wip".to_string()];
-        assert!(weigh_by_habits(&other, &[0.5, 0.5], &perf, 0.25).is_none());
+        assert!(weigh_by_habits(&other, &[0.5, 0.5], &perf, 0.25, 10.0).is_none());
     }
 
     #[test]
