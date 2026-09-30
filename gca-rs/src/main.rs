@@ -29,6 +29,7 @@ use subject::SubjectModel;
 
 const PUSH_KEY: &str = "gca.push";
 const REMOTE_KEY: &str = "gca.remote";
+const ORDER_KEY: &str = "gca.order";
 /// Diffs are cut here before feature extraction, as in training.
 const MAX_DIFF_CHARS: usize = 20_000;
 /// How many staged files to list before the prompts.
@@ -188,6 +189,15 @@ enum ConfigCmd {
         #[arg(long)]
         local: bool,
     },
+    /// Which prompt comes first: the type (default) or the subject. Asked
+    /// first, the subject also ranks the types.
+    Order {
+        #[arg(value_parser = ["type-first", "subject-first"])]
+        order: Option<String>,
+        /// Store the setting in this repository only.
+        #[arg(long)]
+        local: bool,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -198,6 +208,13 @@ enum Mode {
     All,
     /// Only the paths given on the command line.
     Paths,
+}
+
+/// Which prompt comes first (gca.order).
+#[derive(Clone, Copy, PartialEq)]
+enum Order {
+    TypeFirst,
+    SubjectFirst,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -283,12 +300,12 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
     if let Some(op) = git::operation_in_progress()? {
         bail!("a {op} is in progress; conclude it with `git commit` (or abort it) first");
     }
-    // Settle the push setting first, so a bad value stops before anything
-    // is staged or committed.
-    let push_mode = if cli.dry_run {
-        PushMode::Never
+    // Settle the settings first, so a bad value stops before anything is
+    // staged or committed.
+    let (push_mode, order) = if cli.dry_run {
+        (PushMode::Never, Order::TypeFirst)
     } else {
-        push_mode(cli)?
+        (push_mode(cli)?, prompt_order()?)
     };
     let mode = if cli.all {
         Mode::All
@@ -371,6 +388,34 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
         eprint!("{}", summary(&change));
     }
     let theme = theme();
+    let draft_subject = drafted.as_ref().map(|d| d.subject.as_str());
+
+    // Subject first: ask for it, then rank the types with it.
+    let mut typed_subject = None;
+    let (ranked, preselect) = if order == Order::SubjectFirst && ask_subject {
+        // The type and scope are not chosen yet; the shortest header they
+        // could make must fit, and a longer one is caught below.
+        let shortest = cli.kind.as_deref().unwrap_or("ci");
+        let scope_given = cli
+            .scope
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let subject = prompt_subject(&*theme, "Subject", draft_subject, None, |s| {
+            message::header(shortest, scope_given, cli.breaking, s)
+        })?;
+        let ranking = rank(
+            &model,
+            &change,
+            drafted.as_ref(),
+            Some(&subject),
+            cli.topk.into(),
+        )?;
+        typed_subject = Some(subject);
+        (ranking.types, ranking.preselect)
+    } else {
+        (ranked, preselect)
+    };
 
     let kind = match &cli.kind {
         Some(k) => k.clone(),
@@ -399,33 +444,30 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
     let (subject, body) = match cli.message.split_first() {
         Some((first, rest)) => (first.trim().to_string(), body_paragraphs(rest)),
         None => {
-            let prefix = message::header(&kind, scope.as_deref(), cli.breaking, "");
-            let prefix = prefix.trim_end();
-            // The plain theme adds its own ": " after the prompt.
-            let label = if no_color() {
-                prefix.trim_end_matches(':')
-            } else {
-                prefix
+            let header_for = |s: &str| message::header(&kind, scope.as_deref(), cli.breaking, s);
+            let prefix = header_for("");
+            let subject = match typed_subject {
+                Some(s) if message::check_header_len(&header_for(&s)).is_ok() => s,
+                Some(s) => {
+                    eprintln!(
+                        "{}",
+                        style(format!(
+                            "with this type and scope the header is over {} characters; shorten the subject",
+                            message::MAX_HEADER_LEN
+                        ))
+                        .yellow()
+                    );
+                    prompt_subject(&*theme, prompt_label(&prefix), None, Some(&s), header_for)?
+                }
+                None => prompt_subject(
+                    &*theme,
+                    prompt_label(&prefix),
+                    draft_subject,
+                    None,
+                    header_for,
+                )?,
             };
-            // A draft is shown as the default: Enter takes it, typing replaces
-            // it, and Tab puts it on the line to edit.
-            let completion = drafted.as_ref().map(|d| EditDraft(&d.subject));
-            let mut input = Input::with_theme(&*theme).with_prompt(label);
-            if let Some(c) = &completion {
-                input = input.default(c.0.to_string()).completion_with(c);
-            }
-            let subject: String = input
-                .validate_with(|s: &String| -> Result<(), String> {
-                    message::check_subject(s)?;
-                    message::check_header_len(&message::header(
-                        &kind,
-                        scope.as_deref(),
-                        cli.breaking,
-                        s,
-                    ))
-                })
-                .interact_text()?;
-            (subject.trim().to_string(), Vec::new())
+            (subject, Vec::new())
         }
     };
     message::check_subject(&subject).map_err(anyhow::Error::msg)?;
@@ -790,6 +832,17 @@ fn push_mode(cli: &Cli) -> Result<PushMode> {
     })
 }
 
+fn prompt_order() -> Result<Order> {
+    let value = git::get_config(ORDER_KEY).map(|v| v.to_ascii_lowercase());
+    Ok(match value.as_deref() {
+        None | Some("type-first" | "type") => Order::TypeFirst,
+        Some("subject-first" | "subject") => Order::SubjectFirst,
+        Some(other) => {
+            bail!("invalid {ORDER_KEY} value {other:?}; expected type-first or subject-first")
+        }
+    })
+}
+
 fn config(what: &ConfigCmd) -> Result<ExitCode> {
     let (key, value, local, unset) = match what {
         ConfigCmd::Push { mode, local } => (PUSH_KEY, mode, *local, "never (default)"),
@@ -799,6 +852,7 @@ fn config(what: &ConfigCmd) -> Result<ExitCode> {
             *local,
             "(not set: the upstream, then origin)",
         ),
+        ConfigCmd::Order { order, local } => (ORDER_KEY, order, *local, "type-first (default)"),
     };
     match value {
         None => {
@@ -840,6 +894,44 @@ fn theme() -> Box<dyn Theme> {
     } else {
         Box::new(ColorfulTheme::default())
     }
+}
+
+/// The subject prompt's label: `type(scope):`, which the plain theme follows
+/// with its own ": ".
+fn prompt_label(prefix: &str) -> &str {
+    let prefix = prefix.trim_end();
+    if no_color() {
+        prefix.trim_end_matches(':')
+    } else {
+        prefix
+    }
+}
+
+/// Asks for the subject; `header_for` builds the header it is checked in.
+/// A draft is the default: Enter takes it, typing replaces it, and Tab puts
+/// it on the line to edit. `initial` puts text on the line instead.
+fn prompt_subject(
+    theme: &dyn Theme,
+    label: &str,
+    draft: Option<&str>,
+    initial: Option<&str>,
+    header_for: impl Fn(&str) -> String,
+) -> Result<String> {
+    let completion = draft.filter(|_| initial.is_none()).map(EditDraft);
+    let mut input = Input::<String>::with_theme(theme).with_prompt(label);
+    if let Some(c) = &completion {
+        input = input.default(c.0.to_string()).completion_with(c);
+    }
+    if let Some(text) = initial {
+        input = input.with_initial_text(text);
+    }
+    let subject = input
+        .validate_with(|s: &String| -> Result<(), String> {
+            message::check_subject(s)?;
+            message::check_header_len(&header_for(s))
+        })
+        .interact_text()?;
+    Ok(subject.trim().to_string())
 }
 
 /// Tab (or → at the end of an empty line) fills in the subject draft.

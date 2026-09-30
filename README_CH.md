@@ -96,6 +96,9 @@ gca src/auth tests/auth    # 只 commit 這些路徑（包含新檔案），其�
    `release v1.1.0`（見[摘要草稿](#摘要草稿)）：按 Enter 採用、直接打字取代、按 Tab 放到輸入列上修改。
    整行 header 超過 100 字元會被擋下（commitlint 的預設上限）。
 
+設定 `gca config order subject-first` 後會先問摘要，再用摘要一起排序類型，第一個建議正確的機會大幅提高
+（見[參考摘要](#參考摘要)）。選好的類型與 scope 讓 header 超過長度時，gca 會請你縮短摘要。
+
 Esc 或 Ctrl-C 隨時取消，暫存區不受影響。`-a` 和指定路徑都先在暫存區的臨時副本上試算，
 取消時真正的暫存區完全不變。
 
@@ -133,13 +136,15 @@ Esc 或 Ctrl-C 隨時取消，暫存區不受影響。`-a` 和指定路徑都先
 設定存在 git config；預設寫入全域，加 `--local` 只作用於目前的儲存庫。命令列選項優先。
 
 ```
-gca config push              # 顯示目前設定（預設 never：不 push）
-gca config push ask          # commit 後詢問是否 push
-gca config push auto --local # 這個儲存庫每次都 push
-gca config remote upstream   # push 到這裡（未設定時：分支的 upstream，其次 origin）
+gca config push                 # 顯示目前設定（預設 never：不 push）
+gca config push ask             # commit 後詢問是否 push
+gca config push auto --local    # 這個儲存庫每次都 push
+gca config remote upstream      # push 到這裡（未設定時：分支的 upstream，其次 origin）
+gca config order subject-first  # 先問摘要，再用摘要一起排序類型
+gca config order type-first     # 先問類型（預設）
 ```
 
-`gca.push` 的值無效時，gca 會在暫存任何東西之前就停止。
+`gca.push` 或 `gca.order` 的值無效時，gca 會在暫存任何東西之前就停止。
 
 ### Commit hook
 
@@ -236,6 +241,7 @@ commit 前請確認建議的類型。
 摘要模型是以單字與相鄰兩字為特徵的邏輯斯迴歸，用和 diff 模型相同的 commit 的摘要訓練（`train_subject.py`）。
 gca 把兩個模型的機率相乘：摘要的機率取 0.25 次方，並以 0.15 次方除去各類型在訓練資料中的比例。
 這兩個設定是在另外保留的六個訓練專案上選的，沒有用到測試資料。
+想讓每次 commit 都參考摘要，就設定先問摘要：`gca config order subject-first`。
 
 完整數字與重現方式見 [eval/README.md](eval/README.md)。
 

@@ -113,6 +113,11 @@ The prompts:
    Tab puts it on the line to edit. A header longer than 100 characters
    (commitlint's default limit) is rejected.
 
+With `gca config order subject-first`, the subject comes first and the types
+are then ranked with it, which makes the first suggestion right far more
+often (see [With the subject](#with-the-subject)). If the chosen type and
+scope make the header too long, gca asks you to shorten the subject.
+
 Esc or Ctrl-C cancels at any point and leaves your staged changes alone.
 `-a` and paths are tried out in a temporary copy of the index, so cancelling
 leaves the real index exactly as it was.
@@ -155,13 +160,16 @@ Settings live in git config, globally by default, or for the current
 repository with `--local`. Options on the command line win.
 
 ```
-gca config push              # show the setting (default never: do not push)
-gca config push ask          # ask after each commit
-gca config push auto --local # always push in this repository
-gca config remote upstream   # push there (default: the branch's upstream, then origin)
+gca config push                 # show the setting (default never: do not push)
+gca config push ask             # ask after each commit
+gca config push auto --local    # always push in this repository
+gca config remote upstream      # push there (default: the branch's upstream, then origin)
+gca config order subject-first  # ask for the subject first; it then ranks the types
+gca config order type-first     # ask for the type first (default)
 ```
 
-An invalid `gca.push` value stops gca before anything is staged.
+An invalid `gca.push` or `gca.order` value stops gca before anything is
+staged.
 
 ### Commit hook
 
@@ -284,7 +292,8 @@ trained on the subjects of the same commits as the diff model
 (`train_subject.py`). gca multiplies the two models' probabilities, with the
 subject's raised to the power 0.25 and each type's training frequency divided
 out to the power 0.15. Both settings were chosen on six training projects held
-out for the purpose, not on the test sets.
+out for the purpose, not on the test sets. To have the subject count on every
+commit, ask for it first: `gca config order subject-first`.
 
 Full numbers and how to reproduce them: [eval/README.md](eval/README.md).
 

@@ -4,6 +4,10 @@
 
 ### Added
 
+- **`gca config order subject-first`** asks for the subject before the type,
+  so the types are ranked with it. `type-first` stays the default. If the
+  chosen type and scope then make the header too long, gca asks to shorten
+  the subject.
 - **`gca hook install`** adds a `prepare-commit-msg` hook, so plain
   `git commit`, editors and git GUIs get the suggested type too: a subject
   from `git commit -m` or a GUI's message box gets the type `gca -y` would

@@ -660,6 +660,38 @@ fn push_setting_is_read_from_git_config() {
     assert!(remote_head(&repo, &remote).is_some());
 }
 
+#[test]
+fn order_setting_is_stored_and_checked() {
+    let repo = Repo::new();
+    let out = repo.gca(&["config", "order"]);
+    assert!(stdout(&out).contains("gca.order = type-first (default)"));
+    let out = repo.gca(&["config", "order", "subject-first", "--local"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(repo.git(&["config", "gca.order"]).trim(), "subject-first");
+    let out = repo.gca(&["config", "order", "sideways"]);
+    assert_eq!(
+        out.status.code(),
+        Some(2),
+        "only the two orders are accepted"
+    );
+
+    // Flags that answer every prompt make the order moot.
+    repo.write("src/lib.rs", "// changed\n");
+    repo.git(&["add", "-A"]);
+    let out = repo.gca(&["-t", "fix", "-m", "with flags"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(repo.head_message(), "fix: with flags");
+
+    // A bad value stops gca before anything is staged or committed.
+    repo.git(&["config", "gca.order", "sideways"]);
+    repo.write("src/lib.rs", "// changed again\n");
+    let out = repo.gca(&["-a", "-t", "fix", "-m", "bad order"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("gca.order"), "{}", stderr(&out));
+    assert_eq!(repo.commit_count(), 2);
+    assert_eq!(repo.staged(), "");
+}
+
 #[cfg(unix)]
 #[test]
 fn hooks_run_and_no_verify_skips_them() {
