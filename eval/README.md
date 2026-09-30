@@ -41,47 +41,111 @@ commits, and balanced weights edged out unweighted ones in average recall per
 type on six training projects held out from the rest (aws-cdk, commitizen,
 element-plus, immich, pnpm and starship).
 
+Besides the words of the diff, its file paths and extensions, the overlap
+between added and removed words and the line counts, the model reads nine
+signs of whether the change alters behavior (`behavior_features` in
+`train_enhanced.py`, mirrored in `gca-rs/src/features.rs`): the shares of
+changed lines that were only moved, only renamed or changed in literals,
+only reformatted, or are comments; the shares of files that are new,
+deleted, renamed or tests; and how many words about performance ("cache",
+"lazy", "batch" and the like) the added lines have. gca 0.5 added them; see
+[Behavior features](#behavior-features) for what they changed.
+
 Calibration teaches the classifier how common each type is, and even with
 balanced weights the trained model put `fix` first for most diffs: on the
-recent commits of the unseen projects it put `fix` first for 71.1% of
+recent commits of the unseen projects it put `fix` first for 65.6% of
 them (only 44.1% are `fix`), and `refactor`, `perf` and `style`
-commits almost never got their own type first. It scored 53.5% top-1,
-85.8% top-3 and 29.1% macro recall there. `eval/tune_prior.py`
+commits never got their own type first. It scored 55.1% top-1,
+86.8% top-3 and 33.0% macro recall there. `eval/tune_prior.py`
 divides each type's probability by its share of the training data raised to a
 power alpha, by shifting the calibration intercepts, so the result is still a
 plain scikit-learn model.
 
 Alpha has to suit projects the model has not seen: there it is least sure of
-itself, so the correction weighs most. A first choice, alpha = 1, made on
-`test_seen_recent` (projects the model had seen), over-corrected on the unseen
-projects: the first suggestion fell to 39.7% and was `fix` for only
-19.1% of the commits. So alpha was chosen again on unseen projects
-without touching the test sets. `eval/holdout_split.py` held six training
-projects out (aws-cdk, commitizen, element-plus, immich, pnpm and starship,
-with their organizations' commits in the public datasets), a model was trained
-on the rest, and alpha maximizes the average of top-1 and macro recall on the
-six:
+itself, so the correction weighs most. When gca 0.2 introduced the
+correction, a first choice, alpha = 1, made on `test_seen_recent` (projects
+the model had seen), over-corrected on the unseen projects: the first
+suggestion fell to 39.7% and was `fix` for only 19.1% of the commits. So
+alpha is chosen on unseen projects without touching the test sets.
+`eval/holdout_split.py` held six training projects out (aws-cdk, commitizen,
+element-plus, immich, pnpm and starship, with their organizations' commits in
+the public datasets), a model was trained on the rest, and alpha maximizes
+the average of top-1 and macro recall on the six:
 
 | Alpha | Top-1 | Top-3 | Macro recall | Average of top-1 and macro recall |
 | ---: | ---: | ---: | ---: | ---: |
-| 0 | 39.9% | 81.6% | 24.9% | 32.4% |
-| 0.1 | 40.2% | 81.8% | 26.5% | 33.4% |
-| 0.2 | 40.4% | 82.0% | 28.0% | 34.2% |
-| 0.25 | 40.6% | 82.2% | 28.5% | 34.5% |
-| 0.3 | 40.8% | 82.4% | 29.0% | 34.9% |
-| 0.4 | 41.2% | 82.6% | 30.4% | 35.8% |
-| 0.5 | 42.0% | 82.8% | 31.9% | 37.0% |
-| 0.6 | 43.1% | 83.2% | 33.8% | 38.5% |
-| 0.7 | 44.2% | 83.3% | 35.4% | 39.8% |
-| 0.75 | 44.4% | 83.3% | 36.3% | 40.3% |
-| 0.8 | 44.5% | 83.2% | 37.2% | 40.9% |
-| **0.9** | **43.2%** | **83.1%** | **38.7%** | **41.0%** |
-| 1 | 39.6% | 81.4% | 39.5% | 39.5% |
+| 0 | 41.6% | 82.4% | 27.5% | 34.5% |
+| 0.1 | 42.3% | 82.6% | 29.5% | 35.9% |
+| 0.2 | 43.0% | 82.8% | 31.0% | 37.0% |
+| 0.25 | 43.4% | 82.9% | 31.6% | 37.5% |
+| 0.3 | 43.8% | 83.0% | 32.4% | 38.1% |
+| 0.4 | 44.8% | 83.3% | 34.1% | 39.5% |
+| 0.5 | 45.7% | 83.6% | 35.4% | 40.5% |
+| 0.6 | 46.8% | 83.8% | 36.8% | 41.8% |
+| 0.7 | 47.2% | 84.0% | 38.1% | 42.6% |
+| 0.75 | 47.0% | 84.0% | 38.7% | 42.8% |
+| 0.8 | 46.4% | 84.1% | 39.3% | 42.8% |
+| 0.85 | 45.6% | 83.9% | 39.9% | 42.7% |
+| **0.9** | **44.7%** | **83.8%** | **40.5%** | **42.6%** |
+| 0.95 | 43.5% | 83.4% | 41.1% | 42.3% |
+| 1 | 41.4% | 82.2% | 41.7% | 41.6% |
 
-The shipped model, trained on everything, uses alpha = 0.9. Because the
-first choice was revised after seeing its result on `test_unseen_recent`,
-that set shaped the method, though not the value; `test_unseen_older` was
-scored only once, with the final model.
+gca 0.2 to 0.4 used alpha = 0.9, the best for their model. For this one
+0.75 is the best by that measure, 0.2 points ahead of 0.9, but the shipped
+model, trained on everything, keeps 0.9; [Behavior features](#behavior-features)
+says why.
+
+## Behavior features
+
+gca 0.5 added the nine behavior features and retrained the model on the same
+commits. On the six held-out training projects, with every setting of gca 0.4
+(alpha 0.9, the subject's weight and prior power, the history's weights), a
+model trained without them, as in gca 0.4, against one trained with them
+(first suggestion right / right type in top 3 / average recall per type;
+"history" is the project's mix, the same files and the author's own commits,
+as below):
+
+| Ranking | gca 0.4 | gca 0.5 |
+| --- | ---: | ---: |
+| Diff | 43.2% / 83.1% / 38.7% | 44.7% / 83.8% / 40.5% |
+| Diff and subject | 56.7% / 88.6% / 47.2% | 57.0% / 88.8% / 47.8% |
+| Diff and history | 57.2% / 91.0% / 44.0% | 58.2% / 91.5% / 45.3% |
+| Diff, subject and history | 66.3% / 93.7% / 49.3% | 66.7% / 93.8% / 50.0% |
+
+Tuned again one setting at a time, as for gca 0.4, the new model would have
+taken alpha 0.75 (above) and, after it, a weight of 0.15 for the project's
+mix and 0.2 for the same files with a subject. A model built that way was
+scored on the test sets first. It was right first more often (from the diff
+alone, 50.3% instead of 43.5% on the recent commits of the unseen projects),
+but put `perf`, `refactor`, `style` and `build` first less often than gca 0.4,
+even with the subject and the whole history (there, `perf` commits got `perf`
+first 31.4% of the time instead of 42.0%), and its average recall per type
+fell in five of the six rankings with the whole history. The held-out
+projects already showed it: with the history in the ranking, which is what
+gca shows in most repositories, a smaller alpha gains few first suggestions
+and loses average recall per type (history weights tuned again for each
+alpha; first suggestion right / average recall per type / their average):
+
+| Alpha | Diff and history | Diff, subject and history |
+| ---: | ---: | ---: |
+| 0.75 | 58.3% / 42.7% / 50.5% | 66.9% / 49.0% / 58.0% |
+| 0.8 | 58.9% / 44.0% / 51.5% | 67.0% / 49.6% / 58.3% |
+| 0.85 | 58.5% / 44.7% / 51.6% | 66.8% / 50.1% / 58.5% |
+| **0.9** | **58.2% / 45.3% / 51.7%** | **66.7% / 50.0% / 58.4%** |
+| 0.95 | 57.6% / 45.9% / 51.7% | 67.2% / 50.8% / 59.0% |
+| 1 | 56.8% / 46.1% / 51.5% | 67.0% / 51.1% / 59.0% |
+| gca 0.4, alpha 0.9 | 57.2% / 44.0% / 50.6% | 66.3% / 49.3% / 57.8% |
+
+From 0.85 to 0.95 the average without a subject is within 0.2 points; with
+one it keeps rising, while the diff alone loses more (its first suggestion
+is right 43.5% of the time at 0.95, 44.7% at 0.9). gca 0.5 keeps alpha 0.9
+and every other setting of 0.4, with which the new model beats gca 0.4's on
+every measure in the first table, and on the test sets (below); tuned again
+at 0.9, the history's weights come out as they were. Only the subject's
+prior power would move, to 0.1, for half a point more first suggestions
+right and 2.9 points less average recall per type
+([With the subject](#with-the-subject)); it stays 0.15. The test sets shaped
+this choice, since the first model had been scored on them.
 
 ## Results
 
@@ -89,9 +153,9 @@ Commits written by people:
 
 | Set | Commits | Top-1 | Top-3 | Macro recall | Always the most common type |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| Unseen projects, after training | 10,005 | **43.5%** | **85.9%** | 42.9% | 44.1% (`fix`) |
-| Unseen projects, older history | 91,617 | 44.6% | 83.7% | 36.2% | 35.2% (`fix`) |
-| Training projects, after training | 39,591 | 58.0% | 89.7% | 44.9% | 39.2% (`fix`) |
+| Unseen projects, after training | 10,005 | **45.5%** | **86.5%** | 44.3% | 44.1% (`fix`) |
+| Unseen projects, older history | 91,617 | 45.9% | 84.3% | 36.9% | 35.2% (`fix`) |
+| Training projects, after training | 39,591 | 58.8% | 90.2% | 46.1% | 39.2% (`fix`) |
 
 Top-1 is how often the first suggestion is the type the author chose; top-3
 is how often it is among the three gca lists (picking 3 of the 11 types at
@@ -100,17 +164,22 @@ averaged over the types with at least 20 commits: a model that nearly always
 suggests `fix` gets a good top-1 from `fix` being common, but a poor macro
 recall.
 
-The previous model on the same sets (`results_previous.json`, the model embedded in the last release; re-exporting its committed joblib gives a slightly weaker model):
+gca 0.2 to 0.4 shipped a model trained on the same commits without the
+behavior features, with alpha = 0.9 (`results_previous.json`):
 
-| Set | Top-1, previous → this | Top-3, previous → this | Macro recall, previous → this |
+| Set | Top-1, 0.4 → 0.5 | Top-3, 0.4 → 0.5 | Macro recall, 0.4 → 0.5 |
 | --- | ---: | ---: | ---: |
-| Projects never seen, after training | 42.0% → 43.5% | 75.1% → 85.9% | 44.1% → 42.9% |
-| … only the 8 projects the previous model never saw either | 33.6% → 45.9% | 68.1% → 86.8% | 42.6% → 47.4% |
-| Projects never seen, older history | 41.6% → 44.6% | 73.3% → 83.7% | 41.7% → 36.2% |
-| … only the 8 projects the previous model never saw either | 32.2% → 46.4% | 65.7% → 84.8% | 37.4% → 34.6% |
-| Projects seen in training, after training | 33.5% → 58.0% | 65.2% → 89.7% | 37.5% → 44.9% |
+| Unseen projects, after training | 43.5% → 45.5% | 85.9% → 86.5% | 42.9% → 44.3% |
+| Unseen projects, older history | 44.6% → 45.9% | 83.7% → 84.3% | 36.2% → 36.9% |
+| Training projects, after training | 58.0% → 58.8% | 89.7% → 90.2% | 44.9% → 46.1% |
 
-The previous model's training data included commits from 10 of the 18 test projects (among them quasar, electron, vue core and nest), so for it they were not unseen, and on their older history it was partly scored on commits it had trained on. The 8 projects that neither model saw (hoppscotch, napi-rs, novu, rolldown, shadcn/ui, vitest, vueuse, zitadel) are the fair comparison: there the new model's first suggestion and top three are far better. Average recall per type is where the previous model holds up best, on older history in particular: it put the rarer types first more often, at the cost of being wrong more often overall.
+On the first set, `test` commits got `test` first 79.4% of the time instead
+of 71.2% (and `test` was right 29.5% of the times it came first, instead of
+21.4%), `feat` 45.4% instead of 42.7%, `perf` 4.7% instead of 2.7%; the right
+type was among the three for 26.3% of `refactor` commits instead of 23.4%,
+and for 25.9% of `perf` commits instead of 22.4%. `build` (118 commits) and
+`ci` lost a little (28.8% instead of 33.1%, 76.3% instead of 77.9%), and
+`refactor` is still never first from the diff alone.
 
 Per-type precision and recall, per-repository results and the bot commits are
 in `results.json`; the previous model's scores on the same sets are in
@@ -136,35 +205,40 @@ right / right type in top 3 / average recall per type):
 
 | | Top-1 | Top-3 | Macro recall |
 | --- | ---: | ---: | ---: |
-| Diff only | 43.2% | 83.1% | 38.7% |
+| Diff only | 44.7% | 83.8% | 40.5% |
 | Subject only | 52.3% | 85.5% | 32.6% |
-| weight 0.2, prior power 0.15 | 55.8% | 88.3% | 47.9% |
-| **weight 0.25, prior power 0.15** | **56.7%** | **88.6%** | **47.2%** |
-| weight 0.3, prior power 0.15 | 56.6% | 88.8% | 45.5% |
-| weight 0.5, prior power 0.15 | 55.7% | 88.7% | 41.2% |
-| weight 0.25, prior power 0 | 56.1% | 89.5% | 39.5% |
-| weight 0.25, prior power 0.3 | 50.7% | 84.2% | 52.1% |
+| weight 0.2, prior power 0.15 | 56.1% | 88.5% | 48.9% |
+| **weight 0.25, prior power 0.15** | **57.0%** | **88.8%** | **47.8%** |
+| weight 0.3, prior power 0.15 | 57.4% | 89.0% | 46.3% |
+| weight 0.5, prior power 0.15 | 56.1% | 88.9% | 41.8% |
+| weight 0.25, prior power 0 | 56.9% | 89.5% | 40.3% |
+| weight 0.25, prior power 0.1 | 57.5% | 89.2% | 44.9% |
+| weight 0.25, prior power 0.3 | 51.3% | 84.9% | 53.0% |
 
-The shipped model uses the best first suggestion there: weight 0.25, prior
-power 0.15. On the test sets, with each author's own subject
-(`results_subject.json`):
+gca uses weight 0.25 and prior power 0.15, the best first suggestion with gca
+0.4's diff model. With this one, prior power 0.1 is half a point ahead in
+first suggestions and 2.9 points behind in average recall per type, and
+weight 0.3 is 0.4 points ahead and 1.5 behind; gca keeps its settings (see
+[Behavior features](#behavior-features)). On the test sets, with each
+author's own subject (`results_subject.json`):
 
 | Set | Diff only | Subject only | Both |
 | --- | ---: | ---: | ---: |
-| Unseen projects, after training | 43.5% · 85.9% · 42.9% | 58.0% · 86.6% · 36.5% | **61.3% · 90.4% · 50.8%** |
-| Unseen projects, older history | 44.6% · 83.7% · 36.2% | 55.1% · 85.7% · 34.8% | 57.9% · 88.4% · 45.5% |
-| Training projects, after training | 58.0% · 89.7% · 44.9% | 60.5% · 88.2% · 38.7% | 67.9% · 93.6% · 52.0% |
+| Unseen projects, after training | 45.5% · 86.5% · 44.3% | 58.0% · 86.6% · 36.5% | **61.7% · 90.8% · 51.6%** |
+| Unseen projects, older history | 45.9% · 84.3% · 36.9% | 55.1% · 85.7% · 34.8% | 58.1% · 88.6% · 45.8% |
+| Training projects, after training | 58.8% · 90.2% · 46.1% | 60.5% · 88.2% · 38.7% | 68.3% · 93.9% · 52.7% |
 
 (top-1 · top-3 · macro recall). The gain is largest where the diff is
-weakest: on the first set `refactor` goes from 0.0% to 26.6% recall, `perf`
-from 2.7% to 18.4%, `fix` from 39.3% to 71.8%; `test` falls from 71.2% to
-58.7%, which the path rule makes up for when only tests changed.
+weakest: on the first set `refactor` goes from 0.0% to 26.1% recall, `perf`
+from 4.7% to 20.0%, `fix` from 40.7% to 71.5%; `test` falls from 79.4% to
+64.0%, which the path rule makes up for when only tests changed. With gca
+0.4's diff model, both together scored 61.3% · 90.4% · 50.8% there.
 
 A subject draft also counts as the subject when there is no `-m`. That was
 decided after scoring it on the test sets: for the 408 commits with a draft in
-the first set, the first suggestion was right for 64.2% instead of 59.6%
-(5,729 commits in the second: 65.6% instead of 59.9%; 1,265 in the third:
-67.6% instead of 68.1%).
+the first set, the first suggestion was right for 64.0% instead of 60.8%
+(5,729 commits in the second: 66.0% instead of 60.8%; 1,265 in the third:
+68.6% instead of 70.1%).
 
 The authors wrote these subjects with the type in front of them, so a subject
 typed into gca before choosing a type may say less; the numbers are likely an
@@ -192,31 +266,32 @@ suggestion right / right type in top 3 / average recall per type:
 
 | Weight | Diff | Diff and subject |
 | ---: | ---: | ---: |
-| none | 43.2% / 83.1% / 38.7% | 56.7% / 88.6% / 47.2% |
-| 0.05 | 48.6% / 86.2% / 40.6% | 59.3% / 90.5% / 47.9% |
-| 0.1 | **50.5% / 87.2% / 41.3%** | 60.9% / 91.6% / 48.1% |
-| 0.15 | 49.9% / 87.2% / 40.6% | 61.9% / 92.2% / 48.1% |
-| 0.2 | 48.6% / 87.0% / 39.7% | 62.5% / 92.3% / 48.0% |
-| 0.25 | 47.2% / 86.4% / 38.3% | **62.6% / 92.3% / 47.6%** |
-| 0.3 | 45.7% / 85.6% / 37.0% | 62.2% / 92.2% / 47.2% |
+| none | 44.7% / 83.8% / 40.5% | 57.0% / 88.8% / 47.8% |
+| 0.05 | 49.6% / 86.5% / 42.3% | 59.4% / 90.6% / 48.6% |
+| 0.1 | **51.7% / 87.6% / 43.1%** | 61.0% / 91.7% / 49.0% |
+| 0.15 | 51.2% / 87.9% / 42.4% | 62.3% / 92.2% / 49.1% |
+| 0.2 | 49.9% / 87.8% / 41.3% | 62.8% / 92.4% / 48.9% |
+| 0.25 | 48.6% / 87.3% / 40.1% | **62.9% / 92.4% / 48.7%** |
+| 0.3 | 47.0% / 86.6% / 38.6% | 62.6% / 92.4% / 48.3% |
 
-The shipped weights are the best first suggestion for each: 0.1 without a
-subject and 0.25 with one. With them, the same files' mix (86.5% of these
-commits have earlier commits to the same files, a median of 6):
+The shipped weights are the best first suggestion for each, as with gca
+0.4's diff model: 0.1 without a subject and 0.25 with one. With them, the
+same files' mix (86.5% of these commits have earlier commits to the same
+files, a median of 6):
 
 | Weight | Diff | Diff and subject |
 | ---: | ---: | ---: |
-| none | 50.5% / 87.2% / 41.3% | 62.6% / 92.3% / 47.6% |
-| 0.05 | 53.2% / 88.4% / 43.3% | 63.6% / 92.6% / 49.2% |
-| 0.1 | **53.4% / 89.2% / 44.5%** | 64.5% / 92.9% / 50.3% |
-| 0.15 | 52.8% / 89.1% / 45.1% | **64.7% / 93.0% / 50.6%** |
-| 0.2 | 52.0% / 89.0% / 45.2% | 64.7% / 92.9% / 51.1% |
-| 0.3 | 50.2% / 88.5% / 45.2% | 63.8% / 92.7% / 51.4% |
+| none | 51.7% / 87.6% / 43.1% | 62.9% / 92.4% / 48.7% |
+| 0.05 | 54.0% / 88.9% / 44.8% | 64.0% / 92.8% / 50.0% |
+| 0.1 | **54.5% / 89.6% / 45.8%** | 64.7% / 93.0% / 50.9% |
+| 0.15 | 54.1% / 89.7% / 46.5% | **65.1% / 93.1% / 51.3%** |
+| 0.2 | 53.3% / 89.5% / 46.9% | 64.9% / 93.1% / 51.7% |
+| 0.3 | 51.2% / 89.1% / 46.5% | 64.1% / 92.9% / 52.0% |
 
 The shipped weights are again the best first suggestion for each: 0.1
 without a subject and 0.15 with one. The smoothing matters little: with 2 or
-10 commits' worth instead of 5, the best first suggestion is 53.5% or 53.4%
-without a subject and 64.8% or 64.7% with one.
+10 commits' worth instead of 5, the best first suggestion is 54.3% either way
+without a subject and 65.1% or 65.0% with one.
 
 On the test sets (`results_history.json`; for `test_seen_recent` the history
 includes the training projects' older commits, passed with
@@ -225,9 +300,9 @@ same files' mix too:
 
 | Set | Diff | + project | + same files | Diff and subject | + project | + same files |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Unseen projects, after training | 43.5% · 85.9% · 42.9% | 51.1% · 89.9% · 48.0% | 55.7% · 91.4% · 53.0% | 61.3% · 90.4% · 50.8% | 66.9% · 93.7% · 55.1% | **67.8% · 94.2% · 58.5%** |
-| Unseen projects, older history | 44.6% · 83.7% · 36.2% | 51.0% · 88.1% · 38.9% | 54.6% · 90.0% · 42.4% | 57.9% · 88.4% · 45.5% | 63.1% · 92.5% · 47.2% | 64.6% · 93.4% · 50.3% |
-| Training projects, after training | 58.0% · 89.7% · 44.9% | 58.1% · 91.6% · 46.8% | 59.9% · 92.6% · 50.2% | 67.9% · 93.6% · 52.0% | 68.0% · 94.4% · 53.7% | 68.5% · 94.8% · 55.1% |
+| Unseen projects, after training | 45.5% · 86.5% · 44.3% | 53.8% · 90.1% · 49.9% | 58.0% · 91.5% · 55.1% | 61.7% · 90.8% · 51.6% | 67.2% · 94.1% · 55.9% | **68.3% · 94.6% · 59.5%** |
+| Unseen projects, older history | 45.9% · 84.3% · 36.9% | 51.9% · 88.6% · 39.5% | 55.1% · 90.2% · 42.8% | 58.1% · 88.6% · 45.8% | 63.2% · 92.6% · 47.4% | 64.8% · 93.5% · 50.5% |
+| Training projects, after training | 58.8% · 90.2% · 46.1% | 59.2% · 92.2% · 48.1% | 60.8% · 93.0% · 51.3% | 68.3% · 93.9% · 52.7% | 68.4% · 94.6% · 54.2% | 68.9% · 95.0% · 55.7% |
 
 82.4%, 88.7% and 77.7% of those commits have earlier commits to the same
 files. The datasets hold only Conventional Commits, so the simulated history
@@ -259,32 +334,37 @@ commits by their author):
 
 | Weight | Diff | Diff and subject |
 | ---: | ---: | ---: |
-| none | 53.4% / 89.2% / 44.5% | 64.7% / 93.0% / 50.6% |
-| 0.05 | 56.6% / 90.8% / 44.5% | 65.9% / 93.5% / 50.3% |
-| 0.1 | **57.2% / 91.0% / 44.0%** | 66.3% / 93.7% / 50.1% |
-| 0.15 | 56.6% / 90.8% / 42.9% | **66.3% / 93.7% / 49.3%** |
-| 0.2 | 56.1% / 90.3% / 41.9% | 66.1% / 93.5% / 48.7% |
-| 0.25 | 55.2% / 90.0% / 40.6% | 65.5% / 93.2% / 47.8% |
-| 0.3 | 54.6% / 89.5% / 40.0% | 64.8% / 92.9% / 47.2% |
+| none | 54.5% / 89.6% / 45.8% | 65.1% / 93.1% / 51.3% |
+| 0.05 | 57.6% / 91.3% / 46.1% | 66.1% / 93.7% / 50.8% |
+| 0.1 | **58.2% / 91.5% / 45.3%** | 66.5% / 93.9% / 50.6% |
+| 0.15 | 57.7% / 91.3% / 44.2% | **66.7% / 93.8% / 50.0%** |
+| 0.2 | 57.0% / 90.9% / 42.9% | 66.4% / 93.6% / 49.1% |
+| 0.25 | 56.2% / 90.5% / 41.7% | 65.9% / 93.4% / 48.3% |
+| 0.3 | 55.5% / 90.0% / 41.0% | 65.2% / 93.1% / 47.5% |
 
-The shipped weights are the best first suggestion for each: 0.1 without a
-subject and 0.15 with one (ahead of 0.1 by 0.01 points). Of the latest 5, 10
-or 20 commits, smoothed with 1, 2, 5 or 10 commits' worth, 10 with 1 gives
-the best first suggestion without a subject (20 with 1 ties) and is 0.01
-points short of the best with one (10 with 2). On the test sets, on top of
-the project's mix and the same files (`results_history.json`):
+The shipped weights are the best first suggestion for each, as with gca
+0.4's diff model: 0.1 without a subject and 0.15 with one (ahead of 0.1 by
+0.17 points). Of the latest 5, 10 or 20 commits, smoothed with 1, 2, 5 or 10
+commits' worth, 10 with 1 gives the best first suggestion without a subject
+and is 0.02 points short of the best with one (10 with 5). On the test sets,
+on top of the project's mix and the same files (`results_history.json`):
 
 | Set | Diff and history | + own commits | Diff, subject and history | + own commits |
 | --- | ---: | ---: | ---: | ---: |
-| Unseen projects, after training | 55.7% · 91.4% · 53.0% | **62.3% · 92.5% · 54.4%** | 67.8% · 94.2% · 58.5% | **70.2% · 94.6% · 59.2%** |
-| Unseen projects, older history | 54.6% · 90.0% · 42.4% | 60.3% · 91.9% · 43.9% | 64.6% · 93.4% · 50.3% | 67.7% · 94.4% · 50.2% |
-| Training projects, after training | 59.9% · 92.6% · 50.2% | 64.0% · 93.2% · 50.5% | 68.5% · 94.8% · 55.1% | 70.3% · 95.0% · 54.9% |
+| Unseen projects, after training | 58.0% · 91.5% · 55.1% | **63.8% · 93.0% · 56.2%** | 68.3% · 94.6% · 59.5% | **70.8% · 94.9% · 60.3%** |
+| Unseen projects, older history | 55.1% · 90.2% · 42.8% | 60.8% · 92.1% · 44.6% | 64.8% · 93.5% · 50.5% | 67.9% · 94.6% · 50.5% |
+| Training projects, after training | 60.8% · 93.0% · 51.3% | 64.8% · 93.7% · 51.5% | 68.9% · 95.0% · 55.7% | 70.8% · 95.2% · 55.5% |
 
 87.2%, 88.7% and 91.2% of those commits have earlier commits by their author.
 For `test_seen_recent`, the models read the authors' commits in the training
 data again, as the shipped model would read a user's older commits; it was
 trained on them. The datasets name authors, not emails, so the simulation
 matches names.
+
+With gca 0.4's diff model, the same rankings got 62.3% · 92.5% · 54.4% and
+70.2% · 94.6% · 59.2% on the first set (`results_history.json` in 0.4); gca
+0.5 is ahead in every cell of this table and of the one in
+[With the project's history](#with-the-projects-history).
 
 ## Scope suggestions
 
@@ -354,6 +434,10 @@ python eval/tune_history.py (the same arguments)
 python eval/evaluate_scope.py --sets datasets/holdout/validation.jsonl --own-votes 1 2 3 4 8 16 \
     --out scope_holdout.json
 ```
+
+The comparisons under [Behavior features](#behavior-features) are
+`eval/tune_history.py` runs with each `--alpha`, and the same with a diff
+model trained by gca 0.4's `train_enhanced.py`.
 
 `python eval/evaluate.py ... --predictions FILE` also writes every commit's
 label and top three suggestions, for error analysis. The repositories keep

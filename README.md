@@ -13,15 +13,14 @@ own history. You confirm, type the subject line, and gca hands it to
   executable; your diff never leaves your machine.
 - **Measured on projects it never saw.** On 10,005 commits from 18
   repositories that were never used in training, all made after its training
-  data ends, the right type is among the three it lists **85.9%** of the
-  time. On the 8 of them that the previous version had not seen
-  either, its first suggestion is right 45.9% of the time, against
-  33.6%.
+  data ends, the right type is among the three it lists **86.5%** of the
+  time, and its first suggestion is right 45.5% of the time from the diff
+  alone (gca 0.4: 85.9% and 43.5%).
 - **Learns from the history, stores nothing.** The types the project uses,
   the ones the files you are committing got, and how your own recent commits
   differ from what it would have suggested all count. With them, on those
-  10,005 commits, its first suggestion is right **62.3%** of the time
-  instead of 43.5% from the diff alone.
+  10,005 commits, its first suggestion is right **63.8%** of the time
+  instead of 45.5% from the diff alone.
 - **Behaves like git.** Nothing is staged or pushed behind your back; hooks,
   sign-off and your editor work as usual.
 
@@ -34,7 +33,7 @@ $ gca
   A .changeset/fix-registry-header-redirect-leak.md
   A packages/shadcn/src/registry/proxy.test.ts
   M packages/shadcn/src/registry/proxy.ts
-✔ Commit type · fix       ( 21.5%)
+✔ Commit type · fix       ( 23.8%)
 ✔ Scope (optional) · shadcn
 ✔ fix(shadcn): · drop custom registry headers on cross-origin redirects
 [fix-redirect-headers fc3ada1d] fix(shadcn): drop custom registry headers on cross-origin redirects
@@ -253,9 +252,9 @@ repositories:
 
 | Test set | Commits | First suggestion right | Right type in top 3 | Average recall per type | Baseline: always the most common type |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| **Projects never seen**, commits made after training | 10,005 | **43.5%** | **85.9%** | 42.9% | 44.1% (`fix`) |
-| Projects never seen, older history | 91,617 | 44.6% | 83.7% | 36.2% | 35.2% (`fix`) |
-| Projects seen in training, commits made after training | 39,591 | 58.0% | 89.7% | 44.9% | 39.2% (`fix`) |
+| **Projects never seen**, commits made after training | 10,005 | **45.5%** | **86.5%** | 44.3% | 44.1% (`fix`) |
+| Projects never seen, older history | 91,617 | 45.9% | 84.3% | 36.9% | 35.2% (`fix`) |
+| Projects seen in training, commits made after training | 39,591 | 58.8% | 90.2% | 46.1% | 39.2% (`fix`) |
 
 The 18 unseen projects, such as vite, vue, electron, nest, superset and
 rolldown, belong to other organizations than any training data, and every
@@ -272,23 +271,26 @@ instead, and relies on the three-item list for the rest.
 
 ![Accuracy per type on unseen projects](docs/heldout_accuracy.png)
 
-Compared with the previous model on the same commits (previous → this):
+Compared with gca 0.4's model on the same commits (0.4 → 0.5):
 
 | Test set | First suggestion right | Right type in top 3 | Average recall per type |
 | --- | ---: | ---: | ---: |
-| Projects never seen, after training | 42.0% → 43.5% | 75.1% → 85.9% | 44.1% → 42.9% |
-| … only the 8 projects the previous model never saw either | 33.6% → 45.9% | 68.1% → 86.8% | 42.6% → 47.4% |
-| Projects never seen, older history | 41.6% → 44.6% | 73.3% → 83.7% | 41.7% → 36.2% |
-| … only the 8 projects the previous model never saw either | 32.2% → 46.4% | 65.7% → 84.8% | 37.4% → 34.6% |
-| Projects seen in training, after training | 33.5% → 58.0% | 65.2% → 89.7% | 37.5% → 44.9% |
+| Projects never seen, after training | 43.5% → 45.5% | 85.9% → 86.5% | 42.9% → 44.3% |
+| Projects never seen, older history | 44.6% → 45.9% | 83.7% → 84.3% | 36.2% → 36.9% |
+| Projects seen in training, after training | 58.0% → 58.8% | 89.7% → 90.2% | 44.9% → 46.1% |
 
-The previous model's training data included commits from 10 of the 18 test projects (among them quasar, electron, vue core and nest), so for it they were not unseen, and on their older history it was partly scored on commits it had trained on. The 8 projects that neither model saw (hoppscotch, napi-rs, novu, rolldown, shadcn/ui, vitest, vueuse, zitadel) are the fair comparison: there the new model's first suggestion and top three are far better. Average recall per type is where the previous model holds up best, on older history in particular: it put the rarer types first more often, at the cost of being wrong more often overall.
+The model now also reads signs of whether a change alters behavior: lines
+that were only moved, renamed or reformatted, comments, new, deleted,
+renamed and test files, and words about performance in the added lines. On
+the first row, `test` commits get `test` first 79.4% of the time instead of
+71.2%, `feat` 45.4% instead of 42.7% and `perf` 4.7% instead of 2.7%;
+`build` and `ci` lose a little.
 
 `docs`, `test` and `ci` are the most accurate because the file paths already
 carry the signal. `refactor` and `perf` are the weakest: they differ from other
-changes in *intent*, which the diff rarely shows. That is why gca offers a
-ranked list instead of deciding for you; review the suggestion before you
-commit.
+changes in *intent*, which the diff rarely shows, and the behavior signs did
+not change that. That is why gca offers a ranked list instead of deciding for
+you; review the suggestion before you commit.
 
 ### With the subject
 
@@ -299,16 +301,16 @@ each author wrote (without its type prefix):
 
 | Test set | Diff only | Subject only | Both, as gca combines them |
 | --- | ---: | ---: | ---: |
-| **Projects never seen**, after training | 43.5% · 85.9% · 42.9% | 58.0% · 86.6% · 36.5% | **61.3% · 90.4% · 50.8%** |
-| Projects never seen, older history | 44.6% · 83.7% · 36.2% | 55.1% · 85.7% · 34.8% | 57.9% · 88.4% · 45.5% |
-| Projects seen in training, after training | 58.0% · 89.7% · 44.9% | 60.5% · 88.2% · 38.7% | 67.9% · 93.6% · 52.0% |
+| **Projects never seen**, after training | 45.5% · 86.5% · 44.3% | 58.0% · 86.6% · 36.5% | **61.7% · 90.8% · 51.6%** |
+| Projects never seen, older history | 45.9% · 84.3% · 36.9% | 55.1% · 85.7% · 34.8% | 58.1% · 88.6% · 45.8% |
+| Projects seen in training, after training | 58.8% · 90.2% · 46.1% | 60.5% · 88.2% · 38.7% | 68.3% · 93.9% · 52.7% |
 
 Each cell is first suggestion right · right type in top 3 · average recall per
-type. On the first row, `refactor` commits get their own type first 26.6% of
-the time instead of never, and `perf` 18.4% instead of 2.7%. The types the
-file paths already reveal lose a little (`docs` 77.7% → 75.7%, `ci`
-77.9% → 76.7%), `test` more (71.2% → 58.7%); the path rule still pre-selects
-those three when every file fits.
+type. On the first row, `refactor` commits get their own type first 26.1% of
+the time instead of never, and `perf` 20.0% instead of 4.7%. The types the
+file paths already reveal lose a little (`docs` 80.0% → 76.1%) or hold
+(`ci` 76.3% → 77.1%), `test` loses more (79.4% → 64.0%); the path rule still
+pre-selects those three when every file fits.
 
 The subject model is logistic regression over words and pairs of words,
 trained on the subjects of the same commits as the diff model
@@ -330,13 +332,13 @@ test commit sees only the commits before it:
 
 | Test set | Diff only | Diff and history | Diff and subject | Diff, subject and history |
 | --- | ---: | ---: | ---: | ---: |
-| **Projects never seen**, after training | 43.5% · 85.9% · 42.9% | 55.7% · 91.4% · 53.0% | 61.3% · 90.4% · 50.8% | **67.8% · 94.2% · 58.5%** |
-| Projects never seen, older history | 44.6% · 83.7% · 36.2% | 54.6% · 90.0% · 42.4% | 57.9% · 88.4% · 45.5% | 64.6% · 93.4% · 50.3% |
-| Projects seen in training, after training | 58.0% · 89.7% · 44.9% | 59.9% · 92.6% · 50.2% | 67.9% · 93.6% · 52.0% | 68.5% · 94.8% · 55.1% |
+| **Projects never seen**, after training | 45.5% · 86.5% · 44.3% | 58.0% · 91.5% · 55.1% | 61.7% · 90.8% · 51.6% | **68.3% · 94.6% · 59.5%** |
+| Projects never seen, older history | 45.9% · 84.3% · 36.9% | 55.1% · 90.2% · 42.8% | 58.1% · 88.6% · 45.8% | 64.8% · 93.5% · 50.5% |
+| Projects seen in training, after training | 58.8% · 90.2% · 46.1% | 60.8% · 93.0% · 51.3% | 68.3% · 93.9% · 52.7% | 68.9% · 95.0% · 55.7% |
 
 (first suggestion right · right type in top 3 · average recall per type).
 On the projects never seen, the project's mix alone gets the first suggestion
-right 51.1% of the time from the diff and 66.9% with the subject; the commits
+right 53.8% of the time from the diff and 67.2% with the subject; the commits
 to the same files add the rest. History helps most on projects the model
 never saw; on the ones it trained on, it had already learned their habits.
 How much each part counts was chosen on the six held-out training projects:
@@ -360,14 +362,16 @@ project's history:
 
 | Test set | Diff and history | + your commits | Diff, subject and history | + your commits |
 | --- | ---: | ---: | ---: | ---: |
-| **Projects never seen**, after training | 55.7% · 91.4% · 53.0% | **62.3% · 92.5% · 54.4%** | 67.8% · 94.2% · 58.5% | **70.2% · 94.6% · 59.2%** |
-| Projects never seen, older history | 54.6% · 90.0% · 42.4% | 60.3% · 91.9% · 43.9% | 64.6% · 93.4% · 50.3% | 67.7% · 94.4% · 50.2% |
-| Projects seen in training, after training | 59.9% · 92.6% · 50.2% | 64.0% · 93.2% · 50.5% | 68.5% · 94.8% · 55.1% | 70.3% · 95.0% · 54.9% |
+| **Projects never seen**, after training | 58.0% · 91.5% · 55.1% | **63.8% · 93.0% · 56.2%** | 68.3% · 94.6% · 59.5% | **70.8% · 94.9% · 60.3%** |
+| Projects never seen, older history | 55.1% · 90.2% · 42.8% | 60.8% · 92.1% · 44.6% | 64.8% · 93.5% · 50.5% | 67.9% · 94.6% · 50.5% |
+| Projects seen in training, after training | 60.8% · 93.0% · 51.3% | 64.8% · 93.7% · 51.5% | 68.9% · 95.0% · 55.7% | 70.8% · 95.2% · 55.5% |
 
 87% to 91% of those commits' authors had earlier commits among the 500. How
 much the comparison counts (a weight of 0.1, or 0.15 with a subject, smoothed
 with one commit's worth of the training mix) was chosen on the six held-out
-training projects.
+training projects. gca 0.4 got 62.3% · 92.5% · 54.4% and
+70.2% · 94.6% · 59.2% on the first row; gca 0.5 is ahead of it in every
+cell of this table and the one above.
 
 ### Scope suggestions
 
@@ -401,14 +405,15 @@ Full numbers and how to reproduce them: [eval/README.md](eval/README.md).
    `eval/prepare_external.py` add public datasets without touching the test
    projects.
 2. **Training.** TF-IDF over the diff, bag-of-words over file paths and
-   extensions, the overlap between added and removed words, and line counts
-   feed a calibrated LinearSVC that outputs a probability for each of the 11
-   types. Only the first 20,000 characters of a diff are read. Each
-   probability is then corrected for how common the type was in training
-   (`eval/tune_prior.py`); otherwise most diffs would be called `fix`, and
-   `refactor` or `perf` would almost never come first. A second, smaller
-   model reads the subject when it is known before the type:
-   logistic regression over its words and pairs of words
+   extensions, the overlap between added and removed words, line counts, and
+   signs of whether the change alters behavior (lines only moved, renamed or
+   reformatted, comments, new, deleted, renamed and test files, words about
+   performance) feed a calibrated LinearSVC that outputs a probability for
+   each of the 11 types. Only the first 20,000 characters of a diff are
+   read. Each probability is then corrected for how common the type was in
+   training (`eval/tune_prior.py`); otherwise most diffs would be called
+   `fix`. A second, smaller model reads the subject when it is known before
+   the type: logistic regression over its words and pairs of words
    (`train_subject.py`, see [With the subject](#with-the-subject)).
 3. **Export.** `export_model.py` flattens the whole sklearn pipeline into
    `out/model_v2.json`; `train_subject.py` writes `out/subject_model.json`.
@@ -499,7 +504,9 @@ builds the installer on Windows.
 - Draft the subject of other commits too, still offline: a small built-in
   model that completes the subject after the chosen type and scope (mechanical
   commits already get [drafts](#subject-drafts))
-- Better `refactor` / `perf` with features about whether behavior changed
+- Better `refactor` / `perf`. Signs of whether behavior changed (0.5) help
+  a little, more often putting them among the three, but the diff alone
+  still almost never puts them first; the subject is what finds them
 - Notice staged changes that mix unrelated work and suggest splitting them.
   Grouping the files by directory, by name and by what was committed
   together is not enough: on the unseen projects it would flag 12.4% of real

@@ -1,5 +1,47 @@
 # Changelog
 
+## Unreleased
+
+The diff model also reads whether a change alters behavior. Every other
+setting is as in 0.4, and the first suggestion, the top three and the
+average recall per type improve on every test set and in every ranking.
+
+### Changed
+
+- **The diff model reads signs of whether a change alters behavior**: the
+  shares of the changed lines that were only moved, only renamed or changed
+  in literals, only reformatted, or are comments; the shares of the files
+  that are new, deleted, renamed or tests; and the words about performance
+  in the added lines. Retrained on the same 437,945 commits. On recent
+  commits of projects gca never saw, the first suggestion from the diff
+  alone is right 45.5% of the time instead of 43.5%, the right type is in
+  the top three 86.5% instead of 85.9%, and the average recall per type is
+  44.3% instead of 42.9%; with the history and your own commits, the first
+  suggestion is right 63.8% instead of 62.3%, and 70.8% instead of 70.2%
+  with the subject.
+- `refactor` and `perf` stay the hardest. From the diff alone, `perf`
+  commits get `perf` first 4.7% of the time instead of 2.7%, and the right
+  type is among the three for 26.3% of `refactor` commits instead of 23.4%
+  and 25.9% of `perf` commits instead of 22.4%, but `refactor` still never
+  comes first. `build` and `ci` lose a little.
+
+### Model and data
+
+- `train_enhanced.py` computes the nine features with ASCII-only rules, and
+  `gca-rs` computes them the same way; `gca-rs/tests/behavior_fixtures.json`
+  checks the two against each other on tricky diffs. A model file without
+  them still loads.
+- The prior correction stays at 0.9, the subject's weight and prior power
+  and the history's weights as they were. Tuned one at a time for the first
+  suggestion, as for 0.4, alpha would have dropped to 0.75: the first
+  suggestion from the diff alone gained more, but `perf`, `refactor`,
+  `style` and `build` were put first less often, even with the subject and
+  the history. On the six held-out training projects, once the history is
+  in the ranking, 0.75 gains 0.15 to 0.2 points of first suggestions over
+  0.9 and loses 1.0 to 2.5 points of average recall per type.
+  `eval/README.md` has both.
+- `eval/results_previous.json` now holds gca 0.4's scores.
+
 ## 0.4.0 (2026-09-30)
 
 gca learns more from the repository's history: the types the files you are
