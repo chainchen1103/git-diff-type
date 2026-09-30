@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.0 (2026-10-01)
+## 0.4.0 (2026-09-30)
 
 gca learns more from the repository's history: the types the files you are
 committing got, and how your own recent commits differ from what it would
