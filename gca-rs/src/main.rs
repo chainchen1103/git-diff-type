@@ -16,6 +16,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 use console::style;
 use dialoguer::theme::{ColorfulTheme, SimpleTheme, Theme};
 use dialoguer::{Completion, Confirm, Input, Select};
+use std::collections::HashMap;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -329,18 +330,36 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
         .map(|m| m.trim())
         .filter(|m| !m.is_empty())
         .or(drafted.as_ref().map(|d| d.subject.as_str()));
+    let log = git::recent_log(history::DEPTH);
+    let habits = history::type_counts(&log);
     let Ranking {
         types: ranked,
         preselect,
         with_subject,
-    } = rank(&model, &change, drafted.as_ref(), subject, cli.topk.into())?;
+        with_history,
+    } = rank(
+        &model,
+        &change,
+        drafted.as_ref(),
+        subject,
+        &habits,
+        cli.topk.into(),
+    )?;
     let paths: Vec<String> = change.files.iter().map(|f| f.path.clone()).collect();
-    let hint = history::scope_hint(&git::recent_log(history::DEPTH), &paths);
+    let hint = history::scope_hint(&log, &paths);
 
     if cli.dry_run {
         if cli.json {
             let used = subject.filter(|_| with_subject);
-            print_json(&change, &ranked, preselect, &hint, drafted.as_ref(), used)?;
+            print_json(
+                &change,
+                &ranked,
+                preselect,
+                &hint,
+                drafted.as_ref(),
+                used,
+                with_history,
+            )?;
         } else {
             print!("{}", summary(&change));
             for (i, (label, p)) in ranked.iter().enumerate() {
@@ -409,6 +428,7 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
             &change,
             drafted.as_ref(),
             Some(&subject),
+            &habits,
             cli.topk.into(),
         )?;
         typed_subject = Some(subject);
@@ -579,9 +599,11 @@ fn hook_run(file: &Path, source: Option<&str>) -> Result<()> {
         hook::Source::Message => Some(first),
         hook::Source::Editor => draft_subject,
     };
-    let ranking = rank(&model, &change, drafted.as_ref(), subject, 3)?;
+    let log = git::recent_log(history::DEPTH);
+    let habits = history::type_counts(&log);
+    let ranking = rank(&model, &change, drafted.as_ref(), subject, &habits, 3)?;
     let paths: Vec<String> = change.files.iter().map(|f| f.path.clone()).collect();
-    let hint = history::scope_hint(&git::recent_log(history::DEPTH), &paths);
+    let hint = history::scope_hint(&log, &paths);
     let scope = hint.suggestion.filter(|_| hint.repo_uses_scopes);
     let kind = ranking.types[ranking.preselect].0;
     let prefix = message::header(kind, scope.as_deref(), false, "");
@@ -623,9 +645,12 @@ struct Ranking<'m> {
     preselect: usize,
     /// Whether the subject was taken into account.
     with_subject: bool,
+    /// How many of the project's recent typed commits were taken into account.
+    with_history: usize,
 }
 
-/// A known subject's model is combined with the diff model's. A path rule
+/// A known subject's model is combined with the diff model's, and the
+/// result is tilted toward the types the project itself uses. A path rule
 /// (docs, test, ci) or the type a subject draft implies (a release is
 /// `chore`) is pre-selected even when ranked lower, as long as the model
 /// knows that type.
@@ -634,6 +659,7 @@ fn rank<'m>(
     change: &Change,
     drafted: Option<&Draft>,
     subject: Option<&str>,
+    habits: &HashMap<String, usize>,
     topk: usize,
 ) -> Result<Ranking<'m>> {
     let diff: String = change.diff.chars().take(MAX_DIFF_CHARS).collect();
@@ -655,6 +681,16 @@ fn rank<'m>(
             with_subject = true;
         }
     }
+    let weight = if with_subject {
+        history::HABIT_WEIGHT_WITH_SUBJECT
+    } else {
+        history::HABIT_WEIGHT
+    };
+    let mut with_history = 0;
+    if let Some(tilted) = history::weigh_by_habits(&model.payload.classes, &probs, habits, weight) {
+        probs = tilted;
+        with_history = habits.values().sum();
+    }
     let mut ranked = model.topk(&probs, topk);
     let paths: Vec<String> = change.files.iter().map(|f| f.path.clone()).collect();
     let rule = heuristics::classify(&paths)
@@ -674,6 +710,7 @@ fn rank<'m>(
         types: ranked,
         preselect,
         with_subject,
+        with_history,
     })
 }
 
@@ -761,6 +798,7 @@ fn print_json(
     hint: &ScopeHint,
     drafted: Option<&Draft>,
     ranked_with_subject: Option<&str>,
+    ranked_with_history: usize,
 ) -> Result<()> {
     let files: Vec<_> = change
         .files
@@ -787,6 +825,7 @@ fn print_json(
         "repo_uses_scopes": hint.repo_uses_scopes,
         "subject_draft": drafted.map(|d| d.subject.as_str()),
         "ranked_with_subject": ranked_with_subject,
+        "ranked_with_history": ranked_with_history,
     });
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())

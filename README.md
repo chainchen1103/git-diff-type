@@ -101,9 +101,10 @@ If nothing is staged, gca does not stage anything for you; it shows
 
 The prompts:
 
-1. **Type**, ranked by probability. When the subject is already known, from
-   `-m` or a [draft](#subject-drafts), the ranking reads it as well as the
-   diff. Enter accepts the pre-selected one; "other type…" lists the rest.
+1. **Type**, ranked by probability. The ranking reads the diff, the subject
+   when it is already known (from `-m` or a [draft](#subject-drafts)), and
+   leans toward the types the project itself used most in its last 500
+   commits. Enter accepts the pre-selected one; "other type…" lists the rest.
 2. **Scope**, only if the project uses scopes. It is pre-filled with **the
    scope used most often for these files**, learned from the last 500 commits
    (bot commits ignored). Edit or clear it.
@@ -295,6 +296,28 @@ out to the power 0.15. Both settings were chosen on six training projects held
 out for the purpose, not on the test sets. To have the subject count on every
 commit, ask for it first: `gca config order subject-first`.
 
+### With the project's history
+
+Projects have habits: some file dependency updates under `chore`, others
+under `build`; some never write `refactor`. gca counts the types people gave
+the last 500 commits (bots left out) and tilts the ranking toward that mix,
+as far as it differs from the mix gca was trained on. Scored so that each
+test commit sees only the commits before it:
+
+| Test set | Diff only | Diff and history | Diff and subject | Diff, subject and history |
+| --- | ---: | ---: | ---: | ---: |
+| **Projects never seen**, after training | 43.5% · 85.9% · 42.9% | 51.1% · 89.9% · 48.0% | 61.3% · 90.4% · 50.8% | **66.9% · 93.7% · 55.1%** |
+| Projects never seen, older history | 44.6% · 83.7% · 36.2% | 51.0% · 88.1% · 38.9% | 57.9% · 88.4% · 45.5% | 63.1% · 92.5% · 47.2% |
+| Projects seen in training, after training | 58.0% · 89.7% · 44.9% | 58.1% · 91.6% · 46.8% | 67.9% · 93.6% · 52.0% | 68.0% · 94.4% · 53.7% |
+
+(first suggestion right · right type in top 3 · average recall per type).
+History helps most on projects the model never saw; on the ones it trained on,
+it had already learned their habits. How much the history counts (a weight of
+0.1, or 0.25 with a subject, smoothed with 10 commits' worth of the training
+mix) was chosen on the six held-out training projects. A project that uses
+types the way the training data did keeps its ranking, and one without
+Conventional Commits in its history is not affected.
+
 Full numbers and how to reproduce them: [eval/README.md](eval/README.md).
 
 ## How it works
@@ -321,7 +344,9 @@ Full numbers and how to reproduce them: [eval/README.md](eval/README.md).
 4. **Inference.** The Rust CLI embeds both JSON files at build time and
    reimplements the forward passes, so the installed CLI needs git but no
    Python or model file. `gca-rs/tests/parity.rs` checks that Rust matches
-   Python within 1e-6 (1e-9 for the subject model).
+   Python within 1e-6 (1e-9 for the subject model). At run time gca also
+   reads the repository's last 500 commits, for the scope and for the
+   project's mix of types.
    After exporting new weights, rebuild the CLI or pass the JSON with `--model`.
 
 gca always reads the diff in git's default format, whatever personal settings
@@ -352,6 +377,8 @@ python train_subject.py --data datasets/train.jsonl datasets/external.jsonl --we
 python train_subject.py --write-fixtures gca-rs/tests/subject_fixtures.json \
     --fixture-data datasets/test_unseen_recent.jsonl
 python eval/evaluate_subject.py --sets datasets/test_*.jsonl
+python eval/tune_history.py ...         # how much the project's history counts (eval/README.md)
+python eval/evaluate_history.py --sets datasets/test_*.jsonl --history datasets/train.jsonl
 cd gca-rs && cargo test --release && cargo build --release --bin gca
 ```
 
@@ -400,8 +427,8 @@ builds the installer on Windows.
 - Draft the subject of other commits too, still offline: a small built-in
   model that completes the subject after the chosen type and scope (mechanical
   commits already get [drafts](#subject-drafts))
-- Adapt locally to the types a user picks in their own repositories, starting
-  with each repository's own mix of types
+- Learn from the types a user picks over the suggestion, beyond the project's
+  mix of types that gca already reads
 - Read the project's commitlint config (custom types, header length)
 - Better `refactor` / `perf` with features about whether behavior changed
 - Notice staged changes that mix unrelated work and suggest splitting them;

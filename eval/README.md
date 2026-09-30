@@ -170,6 +170,49 @@ The authors wrote these subjects with the type in front of them, so a subject
 typed into gca before choosing a type may say less; the numbers are likely an
 upper bound on what the subject adds.
 
+## With the project's history
+
+gca also reads the repository's last 500 commits and counts the types people
+gave them (bot commits left out). The ranking is tilted toward that mix:
+
+    p ∝ p · (q / prior)^weight,   q = (counts + 10 · prior) / (commits + 10)
+
+where prior is the mix of types in the training data. A project that uses
+types as the training data did keeps its ranking; one with no Conventional
+Commits in its history is not affected.
+
+`eval/history_sim.py` rebuilds that history from the datasets: for each
+commit, the 500 commits before it in the same repository by commit time. On
+the six held-out training projects (`eval/tune_history.py`, with the
+held-out diff and subject models; a median of 500 typed commits before each
+commit), first suggestion right / right type in top 3 / average recall per
+type:
+
+| Weight | Diff | Diff and subject |
+| ---: | ---: | ---: |
+| none | 43.2% / 83.1% / 38.7% | 56.7% / 88.6% / 47.2% |
+| 0.05 | 48.6% / 86.2% / 40.6% | 59.3% / 90.5% / 47.9% |
+| 0.1 | **50.5% / 87.2% / 41.3%** | 60.9% / 91.6% / 48.1% |
+| 0.15 | 49.9% / 87.2% / 40.6% | 61.9% / 92.2% / 48.1% |
+| 0.2 | 48.6% / 87.0% / 39.7% | 62.5% / 92.3% / 48.0% |
+| 0.25 | 47.2% / 86.4% / 38.3% | **62.6% / 92.3% / 47.6%** |
+| 0.3 | 45.7% / 85.6% / 37.0% | 62.2% / 92.2% / 47.2% |
+
+The shipped weights are the best first suggestion for each: 0.1 without a
+subject and 0.25 with one. On the test sets (`results_history.json`; for
+`test_seen_recent` the history includes the training projects' older
+commits, passed with `--history datasets/train.jsonl`):
+
+| Set | Diff | Diff and history | Diff and subject | Diff, subject and history |
+| --- | ---: | ---: | ---: | ---: |
+| Unseen projects, after training | 43.5% · 85.9% · 42.9% | 51.1% · 89.9% · 48.0% | 61.3% · 90.4% · 50.8% | **66.9% · 93.7% · 55.1%** |
+| Unseen projects, older history | 44.6% · 83.7% · 36.2% | 51.0% · 88.1% · 38.9% | 57.9% · 88.4% · 45.5% | 63.1% · 92.5% · 47.2% |
+| Training projects, after training | 58.0% · 89.7% · 44.9% | 58.1% · 91.6% · 46.8% | 67.9% · 93.6% · 52.0% | 68.0% · 94.4% · 53.7% |
+
+The datasets hold only Conventional Commits, so the simulated history has
+500 typed commits where a real log's 500 may have fewer; fewer commits move
+the ranking less.
+
 ## Reproduce
 
 From the repository root, with git and Python 3.11+
@@ -180,15 +223,17 @@ Retraining section (or with the shipped model, after `eval/collect.sh` only):
 bash eval/collect.sh   # needs about 12 GB free: each clone is deleted once mined
 bash eval/run.sh       # writes eval/results.json and redraws docs/heldout_accuracy.png
 python eval/evaluate_subject.py --sets datasets/test_*.jsonl   # writes eval/results_subject.json
+python eval/evaluate_history.py --sets datasets/test_*.jsonl --history datasets/train.jsonl
 ```
 
-`eval/tune_fusion.py` needs the held-out split and the diff model trained
-without it (see `eval/holdout_split.py`):
+`eval/tune_fusion.py` and `eval/tune_history.py` need the held-out split and
+the diff model trained without it (see `eval/holdout_split.py`):
 
 ```
 python eval/tune_fusion.py --diff-model datasets/holdout/model_v2.joblib --alpha 0.9 \
     --train datasets/holdout/train.jsonl datasets/holdout/external.jsonl \
     --val datasets/holdout/validation.jsonl
+python eval/tune_history.py (the same arguments)
 ```
 
 `python eval/evaluate.py ... --predictions FILE` also writes every commit's

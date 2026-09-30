@@ -475,6 +475,39 @@ fn the_hook_goes_where_core_hooks_path_points() {
 }
 
 #[test]
+fn the_project_s_own_types_tilt_the_ranking() {
+    let perf_probability = |kind: &str| {
+        let repo = Repo::new();
+        for i in 0..30 {
+            repo.write("notes.txt", &format!("{i}\n"));
+            repo.git(&["add", "-A"]);
+            repo.git(&["commit", "-q", "-m", &format!("{kind}: step {i}")]);
+        }
+        repo.write(
+            "src/lib.rs",
+            "pub fn one() -> u32 {\n    let n = 1;\n    n\n}\n",
+        );
+        repo.git(&["add", "-A"]);
+        let v = json(&repo.gca(&["--dry-run", "--json", "--topk", "11"]));
+        // the thirty commits and the initial one
+        assert_eq!(v["ranked_with_history"], 31);
+        v["suggestions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["type"] == "perf")
+            .unwrap()["probability"]
+            .as_f64()
+            .unwrap()
+    };
+    let (perf_project, fix_project) = (perf_probability("perf"), perf_probability("fix"));
+    assert!(
+        perf_project > 1.3 * fix_project,
+        "{perf_project} vs {fix_project}"
+    );
+}
+
+#[test]
 fn ordinary_changes_get_no_subject_draft() {
     let repo = Repo::new();
     repo.write("src/lib.rs", "pub fn one() -> u32 {\n    2\n}\n");

@@ -176,7 +176,7 @@ impl SubjectModel {
     }
 }
 
-fn softmax(scores: &[f64]) -> Vec<f64> {
+pub fn softmax(scores: &[f64]) -> Vec<f64> {
     let max = scores.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let exp: Vec<f64> = scores.iter().map(|s| (s - max).exp()).collect();
     let sum: f64 = exp.iter().sum();

@@ -38,6 +38,30 @@ def metrics(scores, classes, y):
     return float((first == y).mean()), float(top3.mean()), float(np.mean(recall))
 
 
+def held_out(diff_model, alpha, train, val, C=0.5):
+    """Commits by people in the held-out projects, with the probabilities a
+    diff model and a subject model trained without those projects give, and
+    the subject model's training prior."""
+    model = joblib.load(diff_model)
+    if alpha:
+        report = json.loads((Path(diff_model).parent / "train_report.json").read_text())
+        tune_prior.apply(model, report["labels"], alpha)
+    classes = np.array([str(c) for c in model.named_steps["clf"].classes_])
+
+    rows = [r for r in iter_rows([Path(val)])
+            if not r.get("is_bot") and isinstance(r.get("label"), str) and str(r.get("diff_text") or "").strip()]
+    y = np.array([r["label"] for r in rows])
+    p_diff = model.predict_proba(prepare_features(pd.DataFrame(rows), 20000)[FEATURE_COLUMNS])
+
+    pairs = list(training_rows(train))
+    subjects, labels = [s for s, _ in pairs], np.array([t for _, t in pairs])
+    vec, clf = fit(subjects, labels, C=C)
+    assert list(clf.classes_) == list(classes)
+    p_subject = clf.predict_proba(vec.transform([subject_of(r.get("message")) for r in rows]))
+    prior = np.array([(labels == c).mean() for c in classes])
+    return rows, classes, y, p_diff, p_subject, prior
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--diff-model", required=True, help="diff model trained without the --val projects")
@@ -48,24 +72,8 @@ def main():
     ap.add_argument("--weights", type=float, nargs="+", default=[0.2, 0.25, 0.3, 0.35, 0.4, 0.5])
     ap.add_argument("--prior-powers", type=float, nargs="+", default=[0.0, 0.1, 0.15, 0.2, 0.3])
     args = ap.parse_args()
-
-    model = joblib.load(args.diff_model)
-    if args.alpha:
-        report = json.loads((Path(args.diff_model).parent / "train_report.json").read_text())
-        tune_prior.apply(model, report["labels"], args.alpha)
-    classes = np.array([str(c) for c in model.named_steps["clf"].classes_])
-
-    rows = [r for r in iter_rows([Path(args.val)])
-            if not r.get("is_bot") and isinstance(r.get("label"), str) and str(r.get("diff_text") or "").strip()]
-    y = np.array([r["label"] for r in rows])
-    p_diff = model.predict_proba(prepare_features(pd.DataFrame(rows), 20000)[FEATURE_COLUMNS])
-
-    pairs = list(training_rows(args.train))
-    subjects, labels = [s for s, _ in pairs], np.array([t for _, t in pairs])
-    vec, clf = fit(subjects, labels, C=args.C)
-    assert list(clf.classes_) == list(classes)
-    p_subject = clf.predict_proba(vec.transform([subject_of(r.get("message")) for r in rows]))
-    prior = np.array([(labels == c).mean() for c in classes])
+    rows, classes, y, p_diff, p_subject, prior = held_out(args.diff_model, args.alpha, args.train,
+                                                          args.val, args.C)
 
     print(f"{len(rows)} held-out commits by people; first suggestion right / right type in top 3 / "
           f"average recall per type")

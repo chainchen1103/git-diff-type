@@ -88,8 +88,8 @@ gca src/auth tests/auth    # 只 commit 這些路徑（包含新檔案），其�
 
 互動流程：
 
-1. **類型**：依機率排序。摘要事先已知時（`-m` 或[草稿](#摘要草稿)），排序會同時參考 diff 與摘要。
-   按 Enter 採用預選的；不在前幾名時選「other type…」。
+1. **類型**：依機率排序。排序會參考 diff、事先已知的摘要（`-m` 或[草稿](#摘要草稿)），
+   並偏向這個專案最近 500 個 commit 最常用的類型。按 Enter 採用預選的；不在前幾名時選「other type…」。
 2. **Scope**：只有專案本身在用 scope 時才會問。預填的是**這些檔案過去最常用的 scope**
    （從最近 500 個 commit 學來，不計 bot），可直接改或清空。
 3. **摘要**：一行描述。機械性的變更會先擬好一個，例如 `bump zod from 3.22.0 to 3.23.8`、
@@ -243,6 +243,22 @@ gca 把兩個模型的機率相乘：摘要的機率取 0.25 次方，並以 0.1
 這兩個設定是在另外保留的六個訓練專案上選的，沒有用到測試資料。
 想讓每次 commit 都參考摘要，就設定先問摘要：`gca config order subject-first`。
 
+### 參考專案歷史
+
+每個專案都有自己的習慣：有的把依賴更新歸在 `chore`，有的歸在 `build`；有的從不寫 `refactor`。
+gca 會統計最近 500 個 commit 裡由人寫的類型（不計 bot），在與訓練資料的比例不同之處，把排序往這個專案的習慣調整。
+測試時每個 commit 只看得到在它之前的 commit：
+
+| 測試資料 | 只看 diff | diff＋歷史 | diff＋摘要 | diff＋摘要＋歷史 |
+| --- | ---: | ---: | ---: | ---: |
+| **沒看過的專案**，訓練後的 commit | 43.5% · 85.9% · 42.9% | 51.1% · 89.9% · 48.0% | 61.3% · 90.4% · 50.8% | **66.9% · 93.7% · 55.1%** |
+| 沒看過的專案，較早的歷史 | 44.6% · 83.7% · 36.2% | 51.0% · 88.1% · 38.9% | 57.9% · 88.4% · 45.5% | 63.1% · 92.5% · 47.2% |
+| 訓練過的專案，訓練後的 commit | 58.0% · 89.7% · 44.9% | 58.1% · 91.6% · 46.8% | 67.9% · 93.6% · 52.0% | 68.0% · 94.4% · 53.7% |
+
+（第一個建議正確 · 正確類型在前 3 · 各類型平均召回率）。在沒看過的專案上效果最明顯；訓練過的專案，
+模型早已學到它們的習慣。歷史的份量（權重 0.1，有摘要時 0.25，並以相當於 10 個 commit 的訓練比例平滑）
+是在另外保留的六個訓練專案上選的。類型比例和訓練資料相同的專案，排序不會改變；歷史裡沒有 Conventional Commits 的專案不受影響。
+
 完整數字與重現方式見 [eval/README.md](eval/README.md)。
 
 ## 運作方式
@@ -262,7 +278,7 @@ gca 把兩個模型的機率相乘：摘要的機率取 0.25 次方，並以 0.1
    `train_subject.py` 直接寫出 `out/subject_model.json`。
 4. **推論**：Rust CLI 在編譯時嵌入這兩份 JSON，自己實作同樣的前向運算，所以安裝後只需要 git，
    不需要 Python 或模型檔。`gca-rs/tests/parity.rs` 驗證 Rust 與 Python 的機率誤差小於 1e-6
-   （摘要模型小於 1e-9）。
+   （摘要模型小於 1e-9）。執行時 gca 也會讀儲存庫最近 500 個 commit，用來建議 scope 與參考專案的類型比例。
    匯出新權重後，重新編譯 CLI，或用 `--model` 指定 JSON。
 
 gca 讀 diff 時固定使用 git 的預設格式（不受 `diff.noprefix`、`color.ui` 等個人設定影響），
@@ -293,6 +309,8 @@ python train_subject.py --data datasets/train.jsonl datasets/external.jsonl --we
 python train_subject.py --write-fixtures gca-rs/tests/subject_fixtures.json \
     --fixture-data datasets/test_unseen_recent.jsonl
 python eval/evaluate_subject.py --sets datasets/test_*.jsonl
+python eval/tune_history.py ...         # 專案歷史要佔多少份量（見 eval/README.md）
+python eval/evaluate_history.py --sets datasets/test_*.jsonl --history datasets/train.jsonl
 cd gca-rs && cargo test --release && cargo build --release --bin gca
 ```
 
@@ -332,7 +350,7 @@ CI 在每次 push 時執行這些檢查（Rust 部分在 Windows、macOS、Linux
 
 - 其他 commit 也離線草擬摘要：由內建小模型接在已選的類型與 scope 後面補完
   （機械性的 commit 已經有[草稿](#摘要草稿)）
-- 依使用者在自己儲存庫的選擇做本地微調，先從用各儲存庫自己的類型分佈校正開始
+- 從使用者沒採用建議、改選其他類型的紀錄學習（專案本身的類型比例 gca 已經會參考）
 - 讀取專案的 commitlint 設定（自訂類型、header 長度）
 - 改善 `refactor` / `perf`：加入「行為是否改變」相關的特徵
 - 發現暫存內容混雜了不相關的變更時，建議拆成幾個 commit；看起來是破壞性變更

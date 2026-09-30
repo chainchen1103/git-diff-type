@@ -4,6 +4,13 @@
 
 ### Added
 
+- **The project's history counts toward the type.** gca counts the types
+  people gave the last 500 commits and tilts the ranking toward the project's
+  own mix. On recent commits of projects gca never saw, the first suggestion
+  is right 51.1% of the time instead of 43.5% from the diff alone, and 66.9%
+  instead of 61.3% with the subject. `--dry-run --json` reports how many
+  commits it read as `ranked_with_history`. `eval/tune_history.py` chose the
+  weights and `eval/evaluate_history.py` scores them.
 - **`gca config order subject-first`** asks for the subject before the type,
   so the types are ranked with it. `type-first` stays the default. If the
   chosen type and scope then make the header too long, gca asks to shorten
