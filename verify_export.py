@@ -24,6 +24,8 @@ import numpy as np
 import pandas as pd
 
 from train_enhanced import (  # noqa: F401
+    BehaviorExtractor,
+    behavior_features,
     PathTokenExtractor,
     DiffSimilarityExtractor,
     FileExtensionExtractor,
@@ -131,6 +133,10 @@ def build_feature_vector(row, payload):
     mean = np.asarray(payload["scaler"]["mean"], dtype=np.float64)
     scale = np.asarray(payload["scaler"]["scale"], dtype=np.float64)
     parts.append((numeric - mean) / scale)
+    if "behavior" in payload:
+        spec = payload["behavior"]
+        values = np.asarray(behavior_features(diff), dtype=np.float64)
+        parts.append((values - np.asarray(spec["mean"])) / np.asarray(spec["scale"]))
     return np.concatenate(parts)
 
 

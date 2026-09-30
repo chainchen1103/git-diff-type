@@ -5,7 +5,7 @@ import pandas as pd
 from sklearn.pipeline import Pipeline
 
 from export_model import export_pipeline
-from train_enhanced import FEATURE_COLUMNS, build_model, prepare_features
+from train_enhanced import BEHAVIOR_FEATURES, FEATURE_COLUMNS, build_model, prepare_features
 from verify_export import build_feature_vector, forward_pass
 
 
@@ -35,7 +35,10 @@ class ModelFactoryTests(unittest.TestCase):
         payload = export_pipeline(model)
         self.assertEqual(payload["classes"], list(model.classes_))
         width = model.named_steps["preprocessor"].transform(samples[FEATURE_COLUMNS]).shape[1]
-        self.assertEqual(payload["feature_layout"]["numeric"][1], width)
+        behavior = len(BEHAVIOR_FEATURES)
+        self.assertEqual(payload["feature_layout"]["numeric"][1], width - behavior)
+        self.assertEqual(payload["feature_layout"]["behavior"], [width - behavior, width])
+        self.assertEqual(payload["behavior"]["features"], list(BEHAVIOR_FEATURES))
         self.assertEqual(len(payload["calibrated_folds"]), 3)
         for fold in payload["calibrated_folds"]:
             self.assertEqual(np.asarray(fold["coef"]).shape, (3, width))

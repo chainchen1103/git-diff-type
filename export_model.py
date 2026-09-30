@@ -3,7 +3,8 @@
 can rebuild the forward pass without Python.
 
 Feature order: diff TF-IDF, path tokens, extensions, Jaccard similarity,
-and scaled numeric stats. Vocabulary sizes determine the offsets.
+scaled numeric stats, and the scaled behavior features (models trained
+before they existed lack them). Vocabulary sizes determine the offsets.
 
 Usage:
     python export_model.py --model out/model_v2.joblib --out out/model_v2.json
@@ -15,6 +16,8 @@ from pathlib import Path
 
 # joblib.load needs the custom classes importable to reconstruct the pipeline.
 from train_enhanced import (  # noqa: F401
+    BEHAVIOR_FEATURES,
+    BehaviorExtractor,
     PathTokenExtractor,
     DiffSimilarityExtractor,
     FileExtensionExtractor,
@@ -55,8 +58,12 @@ def export_pipeline(model):
         raise ValueError("preprocessor must be a ColumnTransformer")
     expected_order = ["diff_tfidf", "path_bow", "ext_bow", "diff_sim", "numeric"]
     active = [(name, cols) for name, transformer, cols in pre.transformers_ if not isinstance(transformer, str) or transformer != "drop"]
-    if [name for name, _ in active] != expected_order or pre.transformer_weights:
+    names = [name for name, _ in active]
+    with_behavior = names == expected_order + ["behavior"]
+    if not (names == expected_order or with_behavior) or pre.transformer_weights:
         raise ValueError("unsupported feature order or transformer weights")
+    if with_behavior and active[5][1] != "diff_text":
+        raise ValueError("behavior features must use diff_text")
     if [cols for _, cols in active[:4]] != ["diff_text"] * 4:
         raise ValueError("text transformers must use diff_text")
     if list(active[4][1]) != ["files_changed", "additions", "deletions", "add_del_ratio"]:
@@ -93,15 +100,30 @@ def export_pipeline(model):
         raise ValueError("unsupported TF-IDF weighting")
     if not scaler.with_mean or not scaler.with_std:
         raise ValueError("numeric features require centering and scaling")
+    behavior = None
+    if with_behavior:
+        pipe = extract_transformer(pre, "behavior")
+        if not isinstance(pipe, Pipeline) or list(pipe.named_steps) != ["extractor", "scale"]:
+            raise ValueError("the behavior pipeline must contain extractor and scale")
+        if type(pipe.named_steps["extractor"]) is not BehaviorExtractor:
+            raise ValueError("unsupported behavior extractor")
+        behavior = pipe.named_steps["scale"]
+        if not isinstance(behavior, StandardScaler) or not behavior.with_mean or not behavior.with_std:
+            raise ValueError("behavior features require a centering and scaling StandardScaler")
+        if len(behavior.mean_) != len(BEHAVIOR_FEATURES):
+            raise ValueError("behavior scaler does not match the behavior features")
 
     layout, offset = {}, 0
-    for name, size in [
+    blocks = [
         ("diff_tfidf", len(tfidf.vocabulary_)),
         ("path_bow", len(path_cv.vocabulary_)),
         ("ext_bow", len(ext_cv.vocabulary_)),
         ("diff_sim", 1),
         ("numeric", len(scaler.mean_)),
-    ]:
+    ]
+    if behavior is not None:
+        blocks.append(("behavior", len(behavior.mean_)))
+    for name, size in blocks:
         layout[name] = [offset, offset + size]
         offset += size
 
@@ -132,6 +154,12 @@ def export_pipeline(model):
         },
         "calibrated_folds": [],
     }
+    if behavior is not None:
+        payload["behavior"] = {
+            "features": list(BEHAVIOR_FEATURES),
+            "mean": behavior.mean_.tolist(),
+            "scale": behavior.scale_.tolist(),
+        }
 
     for cc in clf.calibrated_classifiers_:
         est = cc.estimator
@@ -166,7 +194,7 @@ def main():
     print(f"wrote {out}  ({size_mb:.2f} MB)")
     print(f"  classes      : {payload['classes']}")
     print(f"  folds        : {len(payload['calibrated_folds'])}")
-    print(f"  feature dims : {payload['feature_layout']['numeric'][1]}")
+    print(f"  feature dims : {max(end for _, end in payload['feature_layout'].values())}")
 
 
 if __name__ == "__main__":

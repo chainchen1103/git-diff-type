@@ -141,3 +141,37 @@ fn subject_model_parity() {
         fx.cases.len()
     );
 }
+
+#[derive(Deserialize)]
+struct BehaviorCase {
+    diff_text: String,
+    expected: Vec<f64>,
+}
+
+#[derive(Deserialize)]
+struct BehaviorFixtures {
+    features: Vec<String>,
+    cases: Vec<BehaviorCase>,
+}
+
+#[test]
+fn behavior_features_match_python() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("behavior_fixtures.json");
+    let fx: BehaviorFixtures =
+        serde_json::from_slice(&std::fs::read(&path).expect("read behavior fixtures"))
+            .expect("parse behavior fixtures");
+    assert_eq!(fx.features, features::BEHAVIOR_FEATURES);
+    assert!(!fx.cases.is_empty());
+    for (i, case) in fx.cases.iter().enumerate() {
+        let got = features::behavior(&case.diff_text);
+        for (j, (g, e)) in got.iter().zip(&case.expected).enumerate() {
+            assert!(
+                (g - e).abs() < 1e-12,
+                "case {i}, {}: rust {g} python {e}",
+                fx.features[j]
+            );
+        }
+    }
+}

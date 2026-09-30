@@ -2,7 +2,9 @@
 """Train the commit-type classifier.
 
 Features: TF-IDF over diff text, path tokens, file extensions, Jaccard
-similarity between added/deleted tokens, plus numeric stats. Classifier is
+similarity between added/deleted tokens, numeric stats, and signs of whether
+the change alters behavior (moved or renamed lines, comments, new, deleted,
+renamed and test files, words about performance). Classifier is
 calibrated LinearSVC so the CLI can surface top-k probabilities.
 
 Usage:
@@ -11,6 +13,7 @@ Usage:
 """
 import argparse
 import json
+import math
 import random
 import re
 import time
@@ -82,6 +85,99 @@ class DiffSimilarityExtractor(BaseEstimator, TransformerMixin):
         intersection = len(adds_tokens & dels_tokens)
         union = len(adds_tokens | dels_tokens)
         return intersection / union if union > 0 else 0.0
+
+
+# Whether a change looks like it alters behavior. Computed on the diff text
+# the model reads with ASCII-only rules, so gca-rs/src/features.rs can match
+# them exactly.
+BEHAVIOR_FEATURES = ("moved", "reshaped", "reformatted", "comments", "new_files", "deleted_files",
+                     "renamed_files", "test_files", "perf_words")
+_WS = " \t\n\r\x0b\x0c"
+_IDENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_DIGITS = re.compile(r"[0-9]+")
+_QUOTED = re.compile(r"\"[^\"]*\"|'[^']*'|`[^`]*`")
+_COMMENT = re.compile(r"[ \t]*(?://|#|/\*|\*|<!--|--|;;|\"\"\"|''')")
+_TEST_PATH = re.compile(r"(?:^|/)(?:tests?|__tests__|spec|e2e)/|[._-](?:test|spec)\.|(?:^|/)test_")
+_PERF = re.compile(r"cache|memo|lazy|fast|perf|optimi|bench|alloc|capacity|reserve|pool|batch|parallel|"
+                   r"concurren|throttl|debounc|speed|latenc|throughput", re.ASCII | re.IGNORECASE)
+
+
+def _overlap(a, b):
+    """How many items two multisets share."""
+    counts = Counter(b)
+    shared = 0
+    for item, n in Counter(a).items():
+        shared += min(n, counts[item])
+    return shared
+
+
+def _shape(line):
+    """A line with names, numbers and string contents blanked out."""
+    return _QUOTED.sub("s", _DIGITS.sub("0", _IDENT.sub("x", line)))
+
+
+def _squash(line):
+    """A line without whitespace."""
+    return "".join(ch for ch in line if ch not in _WS)
+
+
+def behavior_features(diff_text):
+    """BEHAVIOR_FEATURES of a diff: the shares of changed lines (a removed and
+    an added line count as two) that were only moved, only renamed or changed
+    in literals, or only reformatted, and that are comments; the shares of
+    files that are new, deleted, renamed and tests; and log(1 + the number of
+    words about performance in the added lines). Lines shorter than four
+    characters, such as a closing brace, do not count as moved."""
+    removed, added = [], []
+    files = new = deleted = renamed = tests = 0
+    in_hunk = False
+    for line in diff_text.split("\n"):
+        if line.startswith("diff --git "):
+            files += 1
+            tests += bool(_TEST_PATH.search(line[len("diff --git "):]))
+            in_hunk = False
+        elif line.startswith("@@"):
+            in_hunk = True
+        elif in_hunk:
+            if line.startswith("+"):
+                added.append(line[1:])
+            elif line.startswith("-"):
+                removed.append(line[1:])
+        elif line.startswith("new file mode"):
+            new += 1
+        elif line.startswith("deleted file mode"):
+            deleted += 1
+        elif line.startswith("rename from "):
+            renamed += 1
+    kept_removed = [x for x in (line.strip(_WS) for line in removed) if len(x) >= 4]
+    kept_added = [x for x in (line.strip(_WS) for line in added) if len(x) >= 4]
+    moved = _overlap(kept_removed, kept_added)
+    reshaped = _overlap([_shape(x) for x in kept_removed], [_shape(x) for x in kept_added]) - moved
+    reformatted = _overlap([_squash(x) for x in kept_removed], [_squash(x) for x in kept_added]) - moved
+    lines = len(removed) + len(added)
+    comments = sum(1 for x in removed + added if _COMMENT.match(x))
+    perf = sum(len(_PERF.findall(x)) for x in added)
+
+    def per_line(k):
+        return 2.0 * k / lines if lines else 0.0
+
+    def per_file(k):
+        return k / files if files else 0.0
+
+    return [per_line(moved), per_line(reshaped), per_line(reformatted),
+            comments / lines if lines else 0.0,
+            per_file(new), per_file(deleted), per_file(renamed), per_file(tests), math.log1p(perf)]
+
+
+class BehaviorExtractor(BaseEstimator, TransformerMixin):
+    """BEHAVIOR_FEATURES of each diff."""
+
+    def fit(self, X, y=None):
+        return self
+
+    def transform(self, X):
+        rows = [behavior_features(str(d)) for d in X]
+        return np.array(rows, dtype=np.float64).reshape(-1, len(BEHAVIOR_FEATURES))
 
 
 class PathTokenExtractor(BaseEstimator, TransformerMixin):
@@ -156,6 +252,11 @@ def build_model(C=1.0, class_weight="balanced", n_jobs=None):
             ('diff_sim', DiffSimilarityExtractor(), 'diff_text'),
 
             ('numeric', StandardScaler(), ['files_changed', 'additions', 'deletions', 'add_del_ratio']),
+
+            ('behavior', Pipeline([
+                ('extractor', BehaviorExtractor()),
+                ('scale', StandardScaler())
+            ]), 'diff_text'),
         ],
         remainder='drop'
     )

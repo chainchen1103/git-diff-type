@@ -1,5 +1,5 @@
 use regex::Regex;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 use crate::model::{CountVecSpec, TfidfSpec};
@@ -148,6 +148,154 @@ pub fn jaccard(diff: &str) -> f64 {
     let inter = adds.intersection(&dels).count();
     let union = adds.len() + dels.len() - inter;
     inter as f64 / union as f64
+}
+
+/// Whether a change looks like it alters behavior, in the order of
+/// BEHAVIOR_FEATURES in train_enhanced.py, with the same ASCII-only rules.
+pub const BEHAVIOR_FEATURES: [&str; 9] = [
+    "moved",
+    "reshaped",
+    "reformatted",
+    "comments",
+    "new_files",
+    "deleted_files",
+    "renamed_files",
+    "test_files",
+    "perf_words",
+];
+
+static IDENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[A-Za-z_][A-Za-z0-9_]*").unwrap());
+static DIGITS: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[0-9]+").unwrap());
+static QUOTED: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#""[^"]*"|'[^']*'|`[^`]*`"#).unwrap());
+static COMMENT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#"^[ \t]*(?://|#|/\*|\*|<!--|--|;;|"""|''')"#).unwrap());
+static TEST_PATH: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:^|/)(?:tests?|__tests__|spec|e2e)/|[._-](?:test|spec)\.|(?:^|/)test_").unwrap()
+});
+static PERF: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i-u)cache|memo|lazy|fast|perf|optimi|bench|alloc|capacity|reserve|pool|batch|parallel|concurren|throttl|debounc|speed|latenc|throughput",
+    )
+    .unwrap()
+});
+
+fn is_ws(c: char) -> bool {
+    matches!(c, ' ' | '\t' | '\n' | '\r' | '\x0b' | '\x0c')
+}
+
+/// How many items two multisets share.
+fn overlap<T: std::hash::Hash + Eq>(
+    a: impl IntoIterator<Item = T>,
+    b: impl IntoIterator<Item = T>,
+) -> usize {
+    let mut counts: HashMap<T, usize> = HashMap::new();
+    for item in b {
+        *counts.entry(item).or_insert(0) += 1;
+    }
+    let mut shared = 0;
+    for item in a {
+        if let Some(n) = counts.get_mut(&item) {
+            if *n > 0 {
+                *n -= 1;
+                shared += 1;
+            }
+        }
+    }
+    shared
+}
+
+fn shape(line: &str) -> String {
+    let named = IDENT.replace_all(line, "x");
+    let numbered = DIGITS.replace_all(&named, "0");
+    QUOTED.replace_all(&numbered, "s").into_owned()
+}
+
+fn squash(line: &str) -> String {
+    line.chars().filter(|c| !is_ws(*c)).collect()
+}
+
+/// BEHAVIOR_FEATURES of a diff; see behavior_features in train_enhanced.py.
+pub fn behavior(diff: &str) -> [f64; 9] {
+    let (mut removed, mut added) = (Vec::new(), Vec::new());
+    let (mut files, mut new, mut deleted, mut renamed, mut tests) =
+        (0usize, 0usize, 0usize, 0usize, 0usize);
+    let mut in_hunk = false;
+    for line in diff.split('\n') {
+        if let Some(rest) = line.strip_prefix("diff --git ") {
+            files += 1;
+            tests += usize::from(TEST_PATH.is_match(rest));
+            in_hunk = false;
+        } else if line.starts_with("@@") {
+            in_hunk = true;
+        } else if in_hunk {
+            if let Some(rest) = line.strip_prefix('+') {
+                added.push(rest);
+            } else if let Some(rest) = line.strip_prefix('-') {
+                removed.push(rest);
+            }
+        } else if line.starts_with("new file mode") {
+            new += 1;
+        } else if line.starts_with("deleted file mode") {
+            deleted += 1;
+        } else if line.starts_with("rename from ") {
+            renamed += 1;
+        }
+    }
+    let kept = |lines: &[&'_ str]| -> Vec<String> {
+        lines
+            .iter()
+            .map(|l| l.trim_matches(is_ws))
+            .filter(|l| l.chars().count() >= 4)
+            .map(String::from)
+            .collect()
+    };
+    let (kept_removed, kept_added) = (kept(&removed), kept(&added));
+    let moved = overlap(kept_removed.iter(), kept_added.iter());
+    let reshaped = overlap(
+        kept_removed.iter().map(|l| shape(l)),
+        kept_added.iter().map(|l| shape(l)),
+    ) - moved;
+    let reformatted = overlap(
+        kept_removed.iter().map(|l| squash(l)),
+        kept_added.iter().map(|l| squash(l)),
+    ) - moved;
+    let lines = removed.len() + added.len();
+    let comments = removed
+        .iter()
+        .chain(&added)
+        .filter(|l| COMMENT.is_match(l))
+        .count();
+    let perf: usize = added.iter().map(|l| PERF.find_iter(l).count()).sum();
+    let per_line = |k: usize| {
+        if lines > 0 {
+            2.0 * k as f64 / lines as f64
+        } else {
+            0.0
+        }
+    };
+    let per_file = |k: usize| {
+        if files > 0 {
+            k as f64 / files as f64
+        } else {
+            0.0
+        }
+    };
+    [
+        per_line(moved),
+        per_line(reshaped),
+        per_line(reformatted),
+        if lines > 0 {
+            comments as f64 / lines as f64
+        } else {
+            0.0
+        },
+        per_file(new),
+        per_file(deleted),
+        per_file(renamed),
+        per_file(tests),
+        (perf as f64).ln_1p(),
+    ]
 }
 
 #[cfg(test)]

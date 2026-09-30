@@ -31,6 +31,15 @@ pub struct ScalerSpec {
     pub scale: Vec<f64>,
 }
 
+/// The scaled behavior features (features::behavior); absent in models
+/// trained before they existed.
+#[derive(Debug, Deserialize)]
+pub struct BehaviorSpec {
+    pub features: Vec<String>,
+    pub mean: Vec<f64>,
+    pub scale: Vec<f64>,
+}
+
 #[derive(Debug, Deserialize)]
 pub struct Fold {
     pub coef: Vec<Vec<f64>>,
@@ -47,6 +56,7 @@ pub struct Payload {
     pub path_bow: CountVecSpec,
     pub ext_bow: CountVecSpec,
     pub scaler: ScalerSpec,
+    pub behavior: Option<BehaviorSpec>,
     pub calibrated_folds: Vec<Fold>,
     pub feature_layout: Option<HashMap<String, [usize; 2]>>,
 }
@@ -99,6 +109,7 @@ impl Model {
             + self.payload.ext_bow.vocabulary.len()
             + 1
             + self.payload.scaler.mean.len()
+            + self.payload.behavior.as_ref().map_or(0, |b| b.mean.len())
     }
 
     // Block order must match feature_layout in export_model.py.
@@ -131,6 +142,13 @@ impl Model {
             let m = self.payload.scaler.mean[i];
             let s = self.payload.scaler.scale[i];
             out.push((v - m) / s);
+        }
+
+        if let Some(spec) = &self.payload.behavior {
+            let values = features::behavior(diff_text);
+            for ((v, m), s) in values.iter().zip(&spec.mean).zip(&spec.scale) {
+                out.push((v - m) / s);
+            }
         }
 
         out
@@ -290,13 +308,31 @@ fn validate_payload(payload: &Payload) -> Result<()> {
         "scaler scales must be finite and positive"
     );
 
-    let blocks = [
+    if let Some(spec) = &payload.behavior {
+        ensure!(
+            spec.features == features::BEHAVIOR_FEATURES,
+            "the model's behavior features are not the ones gca computes"
+        );
+        ensure!(
+            spec.mean.len() == spec.features.len() && spec.scale.len() == spec.features.len(),
+            "behavior scaler must have one mean and scale per feature"
+        );
+        ensure!(
+            spec.mean.iter().all(|v| v.is_finite())
+                && spec.scale.iter().all(|v| v.is_finite() && *v > 0.0),
+            "behavior scaler values must be finite, and scales positive"
+        );
+    }
+    let mut blocks = vec![
         ("diff_tfidf", payload.tfidf.vocabulary.len()),
         ("path_bow", payload.path_bow.vocabulary.len()),
         ("ext_bow", payload.ext_bow.vocabulary.len()),
         ("diff_sim", 1),
         ("numeric", 4),
     ];
+    if let Some(spec) = &payload.behavior {
+        blocks.push(("behavior", spec.features.len()));
+    }
     let mut n_features = 0;
     for (name, width) in blocks {
         let next = n_features + width;
