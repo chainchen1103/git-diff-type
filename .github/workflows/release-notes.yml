@@ -1,0 +1,28 @@
+name: release notes
+
+# Sets a published release's notes to its section of CHANGELOG.md. The
+# release workflow does this for each new tag; run this by hand for an older
+# release, or after fixing its section.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "The release to update, such as v0.4.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  notes:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Notes from CHANGELOG.md
+        run: sh .github/scripts/release-notes.sh "$TAG" > notes.md
+      - name: Update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
