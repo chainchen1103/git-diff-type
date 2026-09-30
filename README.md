@@ -445,8 +445,9 @@ builds the installer on Windows.
 - Learn from the types a user picks over the suggestion, beyond the project's
   mix of types that gca already reads
 - Better `refactor` / `perf` with features about whether behavior changed
-- Notice staged changes that mix unrelated work and suggest splitting them;
-  suggest `!` when a change looks breaking, such as a removed export or a
-  changed signature
+- Notice staged changes that mix unrelated work and suggest splitting them
+- Suggest `!` for breaking changes. Spotting removed exports is not enough:
+  on the unseen projects only 0.5% of commits are marked breaking, and of the
+  3.7% that remove a public definition, 4.1% are (`eval/breaking_signal.py`)
 
 [Changelog](CHANGELOG.md)
