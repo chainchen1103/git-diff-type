@@ -108,11 +108,13 @@ The prompts:
 
 1. **Type**, ranked by probability. The ranking reads the diff, the subject
    when it is already known (from `-m` or a [draft](#subject-drafts)), and
-   leans toward the types the project itself used most in its last 500
-   commits. Enter accepts the pre-selected one; "other type…" lists the rest.
+   leans toward the types the project, these files and you yourself used in
+   the last 500 commits (see [With the project's history](#with-the-projects-history)).
+   Enter accepts the pre-selected one; "other type…" lists the rest.
 2. **Scope**, only if the project uses scopes. It is pre-filled with **the
-   scope used most often for these files**, learned from the last 500 commits
-   (bot commits ignored). Edit or clear it.
+   scope, or no scope, used most often for these files**, or else for the
+   closest directory, learned from the last 500 commits (bot commits ignored;
+   yours count more). Edit or clear it.
 3. **Subject**, one line. For a mechanical change gca drafts one, such as
    `bump zod from 3.22.0 to 3.23.8` or `release v1.1.0` (see
    [Subject drafts](#subject-drafts)): Enter takes it, typing replaces it, and
@@ -366,6 +368,26 @@ project's history:
 much the comparison counts (a weight of 0.1, or 0.15 with a subject, smoothed
 with one commit's worth of the training mix) was chosen on the six held-out
 training projects.
+
+### Scope suggestions
+
+In a project that uses scopes, gca pre-fills the scope prompt from the
+commits among the last 500 that touched the same files, or else from those
+sharing the deepest directory with them: their most common scope, or none if
+most of them have none. Your own commits count eight times. gca 0.3 counted
+only commits with a scope, and so nearly always pre-filled one. How often
+the prompt is pre-filled exactly as the commit has it, empty when it has no
+scope, with each test commit's author standing for you:
+
+| Test set | gca 0.3 | Now |
+| --- | ---: | ---: |
+| **Projects never seen**, after training | 42.1% | **52.7%** |
+| Projects never seen, older history | 38.7% | 63.6% |
+| Projects seen in training, after training | 45.5% | 56.1% |
+
+The changes were compared, and how much your own commits count chosen, on
+the six held-out training projects, where the share went from 47.0% to
+63.3%.
 
 Full numbers and how to reproduce them: [eval/README.md](eval/README.md).
 

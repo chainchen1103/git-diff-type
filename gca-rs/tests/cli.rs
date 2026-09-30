@@ -626,6 +626,55 @@ fn nobody_s_own_commits_without_an_identity() {
 }
 
 #[test]
+fn the_scope_follows_the_files_and_your_own_commits() {
+    let repo = Repo::new();
+    let commit_as = |who: Option<&str>, file: &str, i: usize, message: &str| {
+        repo.write(file, &format!("{i}\n"));
+        repo.git(&["add", "-A"]);
+        let mut args = vec![];
+        let (name, email);
+        if let Some(who) = who {
+            name = format!("user.name={who}");
+            email = format!("user.email={}@example.com", who.to_lowercase());
+            args.extend(["-c", &name, "-c", &email]);
+        }
+        args.extend(["commit", "-q", "-m", message]);
+        repo.git(&args);
+    };
+    for i in 0..3 {
+        commit_as(Some("Other"), "src/a.txt", i, "fix(theirs): a");
+    }
+    commit_as(None, "src/a.txt", 3, "fix(mine): a");
+    // the project uses scopes; docs/ has none
+    for i in 0..3 {
+        commit_as(Some("Other"), "docs/guide.md", i, "docs: guide");
+    }
+    repo.write("src/a.txt", "4\n");
+    repo.write("docs/guide.md", "x\n");
+    repo.git(&["add", "src/a.txt"]);
+    let v = json(&repo.gca(&["--dry-run", "--json"]));
+    assert_eq!(v["repo_uses_scopes"], true);
+    // three of theirs against one of yours, which counts eight times
+    assert_eq!(v["scope"], "mine");
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_gca"));
+    repo.env(&mut cmd);
+    let out = cmd
+        .args(["--dry-run", "--json"])
+        .env("GIT_AUTHOR_NAME", "Someone Else")
+        .env("GIT_AUTHOR_EMAIL", "else@example.com")
+        .output()
+        .unwrap();
+    assert_eq!(json(&out)["scope"], "theirs");
+    // commits to docs/ had no scope, so none is suggested there
+    repo.git(&["reset", "-q"]);
+    repo.git(&["add", "docs/guide.md"]);
+    assert_eq!(
+        json(&repo.gca(&["--dry-run", "--json"]))["scope"],
+        serde_json::Value::Null
+    );
+}
+
+#[test]
 fn a_commitlint_config_sets_the_types_and_the_header_limit() {
     let repo = Repo::new();
     repo.write(

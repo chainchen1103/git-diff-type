@@ -286,6 +286,49 @@ data again, as the shipped model would read a user's older commits; it was
 trained on them. The datasets name authors, not emails, so the simulation
 matches names.
 
+## Scope suggestions
+
+In a project that uses scopes (at least five of the last 500 commits by
+people follow Conventional Commits, and one in five of those has a scope),
+gca pre-fills the scope prompt. gca 0.3 suggested the scope used most often
+by the commits to the same files, or else to other files in the same
+directories, and counted only commits with a scope, so it nearly always
+pre-filled one. Now a commit without a scope is a vote for none, commits
+sharing the deepest directory with the change come after those to the same
+files, and the user's own commits count several times
+(`gca-rs/src/history.rs`). `eval/evaluate_scope.py` scores both, with each
+commit's author standing for the user: how often the prompt is pre-filled
+exactly as the commit has it (empty when it has no scope), how often a scope
+is pre-filled at all, and how often that one is right.
+
+On the six held-out training projects, by how many times the user's own
+commits count:
+
+| Suggestion | Right | Scope pre-filled | Right when pre-filled |
+| --- | ---: | ---: | ---: |
+| gca 0.3 | 47.0% | 88.4% | 47.7% |
+| 1× | 62.1% | 56.8% | 65.7% |
+| 2× | 62.8% | 57.3% | 66.1% |
+| 3× | 63.1% | 57.7% | 66.0% |
+| 4× | 63.2% | 57.9% | 66.0% |
+| **8×** | **63.3%** | 58.5% | 65.6% |
+| 16× | 63.3% | 58.9% | 65.3% |
+
+gca counts them 8 times, the best (16 times is 0.003 points behind). On the
+test sets (`results_scope.json`; for `test_seen_recent` the history
+includes the training projects' older commits):
+
+| Set | Asked | gca 0.3 | Now |
+| --- | ---: | ---: | ---: |
+| Unseen projects, after training | 92.6% | 42.1% · 89.8% · 42.9% | **52.7% · 69.6% · 52.2%** |
+| Unseen projects, older history | 75.2% | 38.7% · 86.7% · 33.7% | 63.6% · 47.4% · 54.8% |
+| Training projects, after training | 98.3% | 45.5% · 87.3% · 48.0% | 56.1% · 78.0% · 55.9% |
+
+(right · scope pre-filled · right when pre-filled; "asked" is the share of
+commits in a project that used scopes then). 77.9%, 55.6% and 82.5% of the
+commits asked about have a scope. As with the types, the simulated history
+holds only Conventional Commits.
+
 ## Reproduce
 
 From the repository root, with git and Python 3.11+
@@ -297,6 +340,7 @@ bash eval/collect.sh   # needs about 12 GB free: each clone is deleted once mine
 bash eval/run.sh       # writes eval/results.json and redraws docs/heldout_accuracy.png
 python eval/evaluate_subject.py --sets datasets/test_*.jsonl   # writes eval/results_subject.json
 python eval/evaluate_history.py --sets datasets/test_*.jsonl --history datasets/train.jsonl
+python eval/evaluate_scope.py --sets datasets/test_*.jsonl --history datasets/train.jsonl
 ```
 
 `eval/tune_fusion.py` and `eval/tune_history.py` need the held-out split and
@@ -307,6 +351,8 @@ python eval/tune_fusion.py --diff-model datasets/holdout/model_v2.joblib --alpha
     --train datasets/holdout/train.jsonl datasets/holdout/external.jsonl \
     --val datasets/holdout/validation.jsonl
 python eval/tune_history.py (the same arguments)
+python eval/evaluate_scope.py --sets datasets/holdout/validation.jsonl --own-votes 1 2 3 4 8 16 \
+    --out scope_holdout.json
 ```
 
 `python eval/evaluate.py ... --predictions FILE` also writes every commit's

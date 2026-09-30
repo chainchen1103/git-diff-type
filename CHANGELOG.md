@@ -24,6 +24,16 @@
   `eval/tune_history.py` chose the weights and `eval/evaluate_history.py`
   scores them.
 
+### Changed
+
+- **Better scope suggestions.** A commit without a scope now counts as a
+  vote for none, so the scope prompt stays empty where these files usually
+  get no scope; commits sharing the deepest directory with the change count
+  next after those to the same files; and your own commits count eight
+  times. On recent commits of projects gca never saw, the prompt is
+  pre-filled exactly right 52.7% of the time instead of 42.1%.
+  `eval/evaluate_scope.py` scores it.
+
 ### Fixed
 
 - With `log.showSignature` set, git's signature checks were read as files of

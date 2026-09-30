@@ -1,0 +1,47 @@
+{
+  "test_unseen_recent": {
+    "commits": 10005,
+    "asked": 0.9260369815092454,
+    "scoped": 0.7786292498650836,
+    "before": {
+      "right": 0.42137075013491637,
+      "suggested": 0.8977873718294658,
+      "right_when_suggested": 0.42870882423659534
+    },
+    "now": {
+      "right": 0.5274689692390718,
+      "suggested": 0.6955207771181867,
+      "right_when_suggested": 0.5220360024829298
+    }
+  },
+  "test_unseen_older": {
+    "commits": 91617,
+    "asked": 0.7521638997129354,
+    "scoped": 0.5561666497366168,
+    "before": {
+      "right": 0.3871515432949747,
+      "suggested": 0.8670168768411429,
+      "right_when_suggested": 0.3369541566940599
+    },
+    "now": {
+      "right": 0.635791092858905,
+      "suggested": 0.47384307294916633,
+      "right_when_suggested": 0.5484335283128656
+    }
+  },
+  "test_seen_recent": {
+    "commits": 39591,
+    "asked": 0.9829001540754212,
+    "scoped": 0.8246389474225214,
+    "before": {
+      "right": 0.45538880608521354,
+      "suggested": 0.8727964228812253,
+      "right_when_suggested": 0.48009657284183255
+    },
+    "now": {
+      "right": 0.5608264377858868,
+      "suggested": 0.7801305442771239,
+      "right_when_suggested": 0.5585677580868305
+    }
+  }
+}

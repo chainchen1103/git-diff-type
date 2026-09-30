@@ -21,6 +21,14 @@ OWN_PSEUDO_COMMITS = 1.0
 # The files a stored diff touches, as they are after the commit. The miner
 # cuts diffs at 20,000 characters, so a large commit's last files are missing.
 FILE_HEADER = re.compile(r"^diff --git a/.+? b/(.+)$", re.M)
+# A Conventional Commits header, as gca-rs/src/message.rs reads it.
+HEADER = re.compile(r"^([a-z]+)(?:\(([^()\r\n]+)\))?!?: \S")
+
+
+def scope_of(message):
+    """The scope of a commit's header, or None."""
+    m = HEADER.match(str(message or "").split("\n", 1)[0].strip())
+    return ((m.group(2) or "").strip() or None) if m else None
 
 
 def files_of(row):
@@ -35,13 +43,13 @@ def scored(row):
 
 def timelines(paths):
     """Each repository's commits, oldest first: (time, sha, type, by a bot,
-    files, author, scored)."""
+    files, author, scored, scope)."""
     by_repo = defaultdict(list)
     for r in iter_rows([Path(p) for p in paths]):
         if isinstance(r.get("label"), str):
             by_repo[r.get("repo")].append(
                 (r.get("committed_at") or "", r.get("sha"), r["label"], bool(r.get("is_bot")), files_of(r),
-                 r.get("author") or "", scored(r)))
+                 r.get("author") or "", scored(r), scope_of(r.get("message"))))
     for commits in by_repo.values():
         commits.sort(key=lambda c: c[:4])
     return by_repo

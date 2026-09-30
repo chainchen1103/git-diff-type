@@ -346,7 +346,8 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
         .or(drafted.as_ref().map(|d| d.subject.as_str()));
     let log = git::recent_log(history::DEPTH);
     let paths: Vec<String> = change.files.iter().map(|f| f.path.clone()).collect();
-    let learned = Learned::read(&model, &log, &paths);
+    let me = git::author_ident();
+    let learned = Learned::read(&model, &log, &paths, me.as_deref());
     let Ranking {
         types: ranked,
         preselect,
@@ -363,7 +364,7 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
         &rules,
         cli.topk.into(),
     )?;
-    let hint = history::scope_hint(&log, &paths);
+    let hint = history::scope_hint(&log, &paths, me.as_deref());
 
     if cli.dry_run {
         if cli.json {
@@ -639,7 +640,8 @@ fn hook_run(file: &Path, source: Option<&str>) -> Result<()> {
     };
     let log = git::recent_log(history::DEPTH);
     let paths: Vec<String> = change.files.iter().map(|f| f.path.clone()).collect();
-    let learned = Learned::read(&model, &log, &paths);
+    let me = git::author_ident();
+    let learned = Learned::read(&model, &log, &paths, me.as_deref());
     let rules = project_rules();
     let ranking = rank(
         &model,
@@ -650,7 +652,7 @@ fn hook_run(file: &Path, source: Option<&str>) -> Result<()> {
         &rules,
         3,
     )?;
-    let hint = history::scope_hint(&log, &paths);
+    let hint = history::scope_hint(&log, &paths, me.as_deref());
     let scope = hint.suggestion.filter(|_| hint.repo_uses_scopes);
     let kind = ranking.types[ranking.preselect].0;
     let prefix = message::header(kind, scope.as_deref(), false, "");
@@ -864,10 +866,10 @@ struct Learned {
 }
 
 impl Learned {
-    fn read(model: &Model, log: &[history::LogEntry], paths: &[String]) -> Self {
+    fn read(model: &Model, log: &[history::LogEntry], paths: &[String], me: Option<&str>) -> Self {
         Learned {
             habits: history::habits(log, paths),
-            own: own_commits(model, log),
+            own: me.map(|me| own_commits(model, log, me)).unwrap_or_default(),
         }
     }
 }
@@ -881,13 +883,9 @@ struct OwnCommit {
 }
 
 /// Your latest typed commits among the recent ones, read again by the diff
-/// model. Empty when git knows no identity or you have none; a commit that
-/// cannot be read is left out.
-fn own_commits(model: &Model, log: &[history::LogEntry]) -> Vec<OwnCommit> {
-    let Some(me) = git::author_ident() else {
-        return Vec::new();
-    };
-    let mine = history::own_commits(log, &me, &model.payload.classes);
+/// model. Empty when you have none; a commit that cannot be read is left out.
+fn own_commits(model: &Model, log: &[history::LogEntry], me: &str) -> Vec<OwnCommit> {
+    let mine = history::own_commits(log, me, &model.payload.classes);
     if mine.is_empty() {
         return Vec::new();
     }

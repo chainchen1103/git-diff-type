@@ -1,9 +1,10 @@
-//! Scope suggestions learned from the repository's own history.
+//! What the repository's own history says about a commit: the scope, and
+//! how the project, the files and you usually choose the type.
 //!
 //! Scopes are project vocabulary (`feat(parser): ...`), so no global model can
 //! know them. Instead gca looks at recent commits: if the project uses scopes,
-//! it suggests the one used most often for the same files, or failing that,
-//! for other files in the same directories.
+//! it suggests the one, or no scope, used most often for the same files, or
+//! failing that, for other files in the deepest directory they share.
 
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
@@ -41,38 +42,68 @@ pub struct ScopeHint {
     pub suggestion: Option<String>,
 }
 
-pub fn scope_hint(log: &[LogEntry], files: &[String]) -> ScopeHint {
+/// A commit of yours counts this many times when suggesting a scope. Chosen
+/// on projects held out from training (eval/evaluate_scope.py).
+const OWN_SCOPE_VOTES: usize = 8;
+
+/// `me` is who the commit will be by (`Name <email>`), whose own commits
+/// count more.
+pub fn scope_hint(log: &[LogEntry], files: &[String], me: Option<&str>) -> ScopeHint {
     let staged: HashSet<&str> = files.iter().map(String::as_str).collect();
-    let dirs: HashSet<&str> = files
-        .iter()
-        .map(|f| parent(f))
-        .filter(|d| !d.is_empty())
-        .collect();
+    // Every directory above a staged file: `a` and `a/b` for `a/b/c.rs`.
+    let mut staged_dirs: HashSet<&str> = HashSet::new();
+    for f in files {
+        staged_dirs.extend(f.match_indices('/').map(|(i, _)| &f[..i]));
+    }
 
     let mut conventional = 0usize;
     let mut scoped = 0usize;
-    // scope -> (commits, index of the most recent one)
-    let mut same_file: HashMap<&str, (usize, usize)> = HashMap::new();
-    let mut same_dir: HashMap<&str, (usize, usize)> = HashMap::new();
-
+    // (how close, scope or none) -> (votes, index of the most recent one).
+    // Closest are commits to a staged file, then those sharing the deepest
+    // directory with one.
+    let mut votes: HashMap<(usize, Option<&str>), (usize, usize)> = HashMap::new();
     for (i, entry) in log.iter().enumerate().filter(|(_, e)| !is_bot(&e.author)) {
         let Some((_, scope)) = message::parse_subject(&entry.subject) else {
             continue;
         };
         conventional += 1;
-        let Some(scope) = scope else { continue };
-        scoped += 1;
-        if entry.files.iter().any(|f| staged.contains(f.as_str())) {
-            same_file.entry(scope).or_insert((0, i)).0 += 1;
-        } else if entry.files.iter().any(|f| dirs.contains(parent(f))) {
-            same_dir.entry(scope).or_insert((0, i)).0 += 1;
+        scoped += usize::from(scope.is_some());
+        let closeness = if entry.files.iter().any(|f| staged.contains(f.as_str())) {
+            usize::MAX
+        } else {
+            entry
+                .files
+                .iter()
+                .filter_map(|f| {
+                    f.match_indices('/')
+                        .rev()
+                        .map(|(i, _)| &f[..i])
+                        .find(|dir| staged_dirs.contains(dir))
+                        .map(|dir| dir.matches('/').count() + 1)
+                })
+                .max()
+                .unwrap_or(0)
+        };
+        if closeness == 0 {
+            continue;
         }
+        let weight = match me {
+            Some(me) if same_person(&entry.author, me) => OWN_SCOPE_VOTES,
+            _ => 1,
+        };
+        votes.entry((closeness, scope)).or_insert((0, i)).0 += weight;
     }
 
     // At least five conventional commits, and one in five of them scoped.
     let repo_uses_scopes = conventional >= 5 && scoped * 5 >= conventional;
+    let closest = votes.keys().map(|(c, _)| *c).max();
     let suggestion = if repo_uses_scopes {
-        most_used(&same_file).or_else(|| most_used(&same_dir))
+        // Most votes win; a tie goes to the scope used most recently.
+        votes
+            .iter()
+            .filter(|((c, _), _)| Some(*c) == closest)
+            .max_by(|a, b| a.1 .0.cmp(&b.1 .0).then(b.1 .1.cmp(&a.1 .1)))
+            .and_then(|((_, scope), _)| scope.map(String::from))
     } else {
         None
     };
@@ -258,18 +289,6 @@ pub fn weigh_by_own_choices(
     Some(crate::subject::softmax(&scores))
 }
 
-/// Highest count wins; a tie goes to the scope used most recently.
-fn most_used(counts: &HashMap<&str, (usize, usize)>) -> Option<String> {
-    counts
-        .iter()
-        .max_by(|a, b| a.1 .0.cmp(&b.1 .0).then(b.1 .1.cmp(&a.1 .1)))
-        .map(|(scope, _)| scope.to_string())
-}
-
-fn parent(path: &str) -> &str {
-    path.rsplit_once('/').map_or("", |(dir, _)| dir)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -380,7 +399,7 @@ mod tests {
             entry("feat(cli): add -a", &["src/cli.rs", "README.md"]),
             entry("docs: typo", &["README.md"]),
         ];
-        let hint = scope_hint(&log, &staged(&["src/cli.rs"]));
+        let hint = scope_hint(&log, &staged(&["src/cli.rs"]), None);
         assert!(hint.repo_uses_scopes);
         assert_eq!(hint.suggestion.as_deref(), Some("cli"));
     }
@@ -394,7 +413,7 @@ mod tests {
             entry("docs: readme", &["README.md"]),
             entry("docs: more", &["README.md"]),
         ];
-        let hint = scope_hint(&log, &staged(&["src/parser/ast.rs"]));
+        let hint = scope_hint(&log, &staged(&["src/parser/ast.rs"]), None);
         assert_eq!(hint.suggestion.as_deref(), Some("parser"));
     }
 
@@ -407,7 +426,7 @@ mod tests {
             entry("fix(b): y", &["b.rs"]),
             entry("fix(c): z", &["c.rs"]),
         ];
-        let hint = scope_hint(&log, &staged(&["a.rs"]));
+        let hint = scope_hint(&log, &staged(&["a.rs"]), None);
         assert_eq!(hint.suggestion.as_deref(), Some("b"));
     }
 
@@ -416,7 +435,7 @@ mod tests {
         let log: Vec<_> = (0..20)
             .map(|i| entry(&format!("fix: bug {i}"), &["a.rs"]))
             .collect();
-        let hint = scope_hint(&log, &staged(&["a.rs"]));
+        let hint = scope_hint(&log, &staged(&["a.rs"]), None);
         assert_eq!(
             hint,
             ScopeHint {
@@ -443,9 +462,62 @@ mod tests {
             entry("docs: d", &["README.md"]),
             entry("feat(cli): e", &["src/cli.ts"]),
         ]);
-        let hint = scope_hint(&log, &staged(&["src/cli.ts"]));
+        let hint = scope_hint(&log, &staged(&["src/cli.ts"]), None);
         assert!(hint.repo_uses_scopes);
         assert_eq!(hint.suggestion.as_deref(), Some("cli"));
+    }
+
+    #[test]
+    fn no_scope_when_the_same_files_mostly_had_none() {
+        let log = [
+            entry("fix: a", &["src/cli.rs"]),
+            entry("fix: b", &["src/cli.rs"]),
+            entry("feat(cli): c", &["src/cli.rs"]),
+            entry("feat(model): d", &["src/model.rs"]),
+            entry("feat(model): e", &["src/model.rs"]),
+        ];
+        let hint = scope_hint(&log, &staged(&["src/cli.rs"]), None);
+        assert!(hint.repo_uses_scopes);
+        assert_eq!(hint.suggestion, None);
+    }
+
+    #[test]
+    fn the_deepest_shared_directory_counts_first() {
+        let log = [
+            entry("feat(core): a", &["packages/core/src/x.ts"]),
+            entry("feat(core): b", &["packages/core/src/x.ts"]),
+            entry("feat(core): c", &["packages/core/src/y.ts"]),
+            entry("fix(foo): d", &["packages/foo/test/b.ts"]),
+            entry("docs: e", &["README.md"]),
+        ];
+        let hint = scope_hint(&log, &staged(&["packages/foo/src/a.ts"]), None);
+        assert_eq!(hint.suggestion.as_deref(), Some("foo"));
+        // with nothing closer, the top directory
+        let hint = scope_hint(&log, &staged(&["packages/new/a.ts"]), None);
+        assert_eq!(hint.suggestion.as_deref(), Some("core"));
+    }
+
+    #[test]
+    fn your_own_commits_count_more_for_the_scope() {
+        let mut log: Vec<LogEntry> = (0..3)
+            .map(|i| by("Bo <bo@x>", &format!("fix(x): {i}")))
+            .collect();
+        log.push(by("Ada <ada@x>", "fix(y): mine"));
+        log.push(by("Cy <cy@x>", "docs: other"));
+        for e in &mut log[..4] {
+            e.files = vec!["src/a.rs".into()];
+        }
+        let files = staged(&["src/a.rs"]);
+        assert_eq!(
+            scope_hint(&log, &files, None).suggestion.as_deref(),
+            Some("x")
+        );
+        assert_eq!(
+            scope_hint(&log, &files, Some("Ada <ada@x>"))
+                .suggestion
+                .as_deref(),
+            Some("y")
+        );
     }
 
     #[test]
@@ -457,7 +529,7 @@ mod tests {
             entry("feat(cli): y", &["src/main.rs"]),
             entry("feat(cli): z", &["src/main.rs"]),
         ];
-        let hint = scope_hint(&log, &staged(&["README.md"]));
+        let hint = scope_hint(&log, &staged(&["README.md"]), None);
         assert!(hint.repo_uses_scopes);
         assert_eq!(hint.suggestion, None);
     }
