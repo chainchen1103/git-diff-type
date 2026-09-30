@@ -508,6 +508,56 @@ fn the_project_s_own_types_tilt_the_ranking() {
 }
 
 #[test]
+fn a_commitlint_config_sets_the_types_and_the_header_limit() {
+    let repo = Repo::new();
+    repo.write(
+        ".commitlintrc.json",
+        r#"{"rules": {"type-enum": [2, "always", ["feat", "fix", "deps"]],
+                      "header-max-length": [2, "always", 40]}}"#,
+    );
+    repo.git(&["add", "-A"]);
+    repo.git(&["commit", "-q", "-m", "chore: add commitlint config"]);
+    repo.write(
+        "src/lib.rs",
+        "pub fn one() -> u32 {\n    let n = 1;\n    n\n}\n",
+    );
+    repo.git(&["add", "-A"]);
+
+    let v = json(&repo.gca(&["--dry-run", "--json", "--topk", "11"]));
+    let types: Vec<&str> = v["suggestions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["type"].as_str().unwrap())
+        .collect();
+    assert!(
+        !types.is_empty() && types.iter().all(|t| ["feat", "fix"].contains(t)),
+        "{types:?}"
+    );
+    assert_eq!(
+        v["commitlint"]["types"],
+        serde_json::json!(["feat", "fix", "deps"])
+    );
+    assert_eq!(v["commitlint"]["header_max_length"], 40);
+
+    // a type the project left out is a usage error; one it added is fine
+    let out = repo.gca(&["-t", "chore", "-m", "tidy"]);
+    assert_eq!(out.status.code(), Some(2));
+    assert!(stderr(&out).contains("feat, fix, deps"), "{}", stderr(&out));
+    let out = repo.gca(&[
+        "-t",
+        "deps",
+        "-m",
+        "bump everything that can be bumped today",
+    ]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("within 40"), "{}", stderr(&out));
+    let out = repo.gca(&["-t", "deps", "-m", "bump zod"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert_eq!(repo.head_message(), "deps: bump zod");
+}
+
+#[test]
 fn ordinary_changes_get_no_subject_draft() {
     let repo = Repo::new();
     repo.write("src/lib.rs", "pub fn one() -> u32 {\n    2\n}\n");

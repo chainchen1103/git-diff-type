@@ -4,6 +4,12 @@
 
 ### Added
 
+- **commitlint configs.** gca follows a project's `type-enum` and
+  `header-max-length` rules: it suggests only allowed types, offers the
+  project's own types under "other type…" and with `-t`, and uses the
+  project's header limit. JSON configs and `package.json` are read as JSON;
+  JavaScript, TypeScript and YAML configs when the rules are written out
+  literally. `--dry-run --json` reports them under `commitlint`.
 - **The project's history counts toward the type.** gca counts the types
   people gave the last 500 commits and tilts the ranking toward the project's
   own mix. On recent commits of projects gca never saw, the first suggestion

@@ -9,7 +9,7 @@ pub const TYPES: [&str; 11] = [
     "feat", "fix", "docs", "style", "refactor", "perf", "test", "build", "ci", "chore", "revert",
 ];
 
-/// commitlint's default `header-max-length`.
+/// commitlint's default `header-max-length`; a project's config can change it.
 pub const MAX_HEADER_LEN: usize = 100;
 
 static SUBJECT: LazyLock<Regex> =
@@ -58,11 +58,11 @@ pub fn check_subject(subject: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn check_header_len(header: &str) -> Result<(), String> {
+pub fn check_header_len(header: &str, max: usize) -> Result<(), String> {
     let n = header.chars().count();
-    if n > MAX_HEADER_LEN {
+    if n > max {
         return Err(format!(
-            "the header is {n} characters; keep it within {MAX_HEADER_LEN}"
+            "the header is {n} characters; keep it within {max}"
         ));
     }
     Ok(())
@@ -119,8 +119,9 @@ mod tests {
         assert!(check_subject("add flag").is_ok());
         assert!(check_subject("   ").is_err());
         assert!(check_subject("one\ntwo").is_err());
-        assert!(check_header_len(&"x".repeat(MAX_HEADER_LEN)).is_ok());
-        assert!(check_header_len(&"x".repeat(MAX_HEADER_LEN + 1)).is_err());
+        assert!(check_header_len(&"x".repeat(MAX_HEADER_LEN), MAX_HEADER_LEN).is_ok());
+        assert!(check_header_len(&"x".repeat(MAX_HEADER_LEN + 1), MAX_HEADER_LEN).is_err());
+        assert!(check_header_len(&"x".repeat(51), 50).is_err());
     }
 
     #[test]

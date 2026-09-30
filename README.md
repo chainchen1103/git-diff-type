@@ -190,6 +190,21 @@ The hook never stops a commit. `GCA_HOOK=0 git commit ...` skips it once, and
 `gca hook uninstall` removes it. gca does not replace a hook that is already
 there; add `gca hook run "$@" || true` to that one instead.
 
+### commitlint
+
+If the project has a commitlint config, gca follows its `type-enum` and
+`header-max-length` rules at level 2, the ones that make commitlint reject a
+commit. It suggests only the allowed types, lists the project's own types
+(such as `deps`) under "other type…" and accepts them with `-t`, and checks
+the header against the project's limit instead of 100.
+
+`.commitlintrc`, `.commitlintrc.json` and the `commitlint` key of
+`package.json` are read as JSON. JavaScript, TypeScript and YAML configs
+cannot be run here, so gca reads the two rules when they are written out
+literally, as in `'type-enum': [2, 'always', ['feat', 'fix', 'deps']]`, and
+knows that `@commitlint/config-angular` has no `chore`. `--dry-run --json`
+shows what it found under `commitlint`.
+
 ### Pre-selection rule
 
 When every changed file is documentation, a test, or CI configuration (for
@@ -429,7 +444,6 @@ builds the installer on Windows.
   commits already get [drafts](#subject-drafts))
 - Learn from the types a user picks over the suggestion, beyond the project's
   mix of types that gca already reads
-- Read the project's commitlint config (custom types, header length)
 - Better `refactor` / `perf` with features about whether behavior changed
 - Notice staged changes that mix unrelated work and suggest splitting them;
   suggest `!` when a change looks breaking, such as a removed export or a

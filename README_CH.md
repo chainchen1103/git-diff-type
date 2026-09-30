@@ -159,6 +159,15 @@ gca config order type-first     # 先問類型（預設）
 hook 絕不會擋下 commit。`GCA_HOOK=0 git commit ...` 可以略過一次，`gca hook uninstall` 則會移除它。
 已經有別的 hook 時，gca 不會覆蓋，請改在那個 hook 裡加上 `gca hook run "$@" || true`。
 
+### commitlint
+
+專案有 commitlint 設定時，gca 會遵守其中等級 2（commitlint 會擋下 commit）的 `type-enum` 與 `header-max-length`：
+只建議允許的類型，專案自訂的類型（例如 `deps`）會列在「other type…」裡、也能用 `-t` 指定，header 長度上限也改用專案的設定而不是 100。
+
+`.commitlintrc`、`.commitlintrc.json` 與 `package.json` 的 `commitlint` 欄位以 JSON 讀取。JavaScript、TypeScript、YAML
+設定無法在這裡執行，所以只有當這兩條規則直接寫成字面值時才讀得到，例如 `'type-enum': [2, 'always', ['feat', 'fix', 'deps']]`；
+另外也知道 `@commitlint/config-angular` 沒有 `chore`。`--dry-run --json` 的 `commitlint` 欄位會顯示讀到的內容。
+
 ### 預選規則
 
 當所有變更的檔案都屬於文件、測試或 CI 設定（例如 `docs/`、`*_test.go`、`.github/workflows/`），
@@ -351,7 +360,6 @@ CI 在每次 push 時執行這些檢查（Rust 部分在 Windows、macOS、Linux
 - 其他 commit 也離線草擬摘要：由內建小模型接在已選的類型與 scope 後面補完
   （機械性的 commit 已經有[草稿](#摘要草稿)）
 - 從使用者沒採用建議、改選其他類型的紀錄學習（專案本身的類型比例 gca 已經會參考）
-- 讀取專案的 commitlint 設定（自訂類型、header 長度）
 - 改善 `refactor` / `perf`：加入「行為是否改變」相關的特徵
 - 發現暫存內容混雜了不相關的變更時，建議拆成幾個 commit；看起來是破壞性變更
   （例如刪除 export、改動函式簽名）時，建議加上 `!`

@@ -131,10 +131,17 @@ pub fn replaying() -> Result<bool> {
     Ok(false)
 }
 
+/// The top directory of the work tree.
+pub fn toplevel() -> Result<PathBuf> {
+    Ok(PathBuf::from(
+        run(None, &["rev-parse", "--show-toplevel"])?.trim(),
+    ))
+}
+
 /// Where git looks for a hook: `.git/hooks`, or core.hooksPath, which a
 /// relative path means from the top of the work tree.
 pub fn hook_path(name: &str) -> Result<PathBuf> {
-    let top = PathBuf::from(run(None, &["rev-parse", "--show-toplevel"])?.trim());
+    let top = toplevel()?;
     let top_arg = top.to_string_lossy();
     let rel = format!("hooks/{name}");
     let out = run(None, &["-C", &top_arg, "rev-parse", "--git-path", &rel])?;
