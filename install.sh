@@ -8,7 +8,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/chainchen1103/git-diff-type/main/install.sh | sh -s -- --uninstall
 #
 # Settings, as environment variables:
-#   GCA_VERSION=v0.2.0      install this release instead of the latest
+#   GCA_VERSION=v0.3.0      install this release instead of the latest
 #   GCA_INSTALL_DIR=DIR     install into DIR instead of ~/.local/bin
 #   GCA_NO_MODIFY_PATH=1    leave your shell profile alone
 #   GCA_DOWNLOAD_URL=URL    download from URL instead of GitHub (a mirror, or a test)

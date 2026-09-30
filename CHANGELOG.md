@@ -39,7 +39,11 @@
 - With `log.showSignature` set, git's signature checks were read as files of
   the previous commit in the history gca reads.
 
-## 0.3.0
+## 0.3.0 (2026-09-30)
+
+The type is ranked with more than the diff: the subject when it is known and
+the types the project uses. gca also works through plain `git commit`,
+follows commitlint configs and drafts the subject of mechanical changes.
 
 ### Added
 

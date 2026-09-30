@@ -59,7 +59,7 @@ irm https://raw.githubusercontent.com/chainchen1103/git-diff-type/main/install.p
 下載你的平台對應的 gca，用 Release 附的 `SHA256SUMS` 驗證，放到 `~/.local/bin`
 （Windows：`%LOCALAPPDATA%\gca`）並把該資料夾加入 PATH，其他東西都不會動。再執行一次就是升級。
 移除：`curl -fsSL .../install.sh | sh -s -- --uninstall`；PowerShell 則先設定
-`$env:GCA_UNINSTALL = 1` 再執行同一行。`GCA_VERSION=v0.2.0` 可指定版本，`GCA_INSTALL_DIR`
+`$env:GCA_UNINSTALL = 1` 再執行同一行。`GCA_VERSION=v0.3.0` 可指定版本，`GCA_INSTALL_DIR`
 指定資料夾，`GCA_NO_MODIFY_PATH=1` 則不修改 PATH。
 
 預先編譯的執行檔涵蓋 Windows x64（在 Windows on Arm 上也能執行）、macOS（Apple silicon 與 Intel）
