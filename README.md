@@ -106,8 +106,11 @@ The prompts:
 2. **Scope**, only if the project uses scopes. It is pre-filled with **the
    scope used most often for these files**, learned from the last 500 commits
    (bot commits ignored). Edit or clear it.
-3. **Subject**, one line. A header longer than 100 characters (commitlint's
-   default limit) is rejected.
+3. **Subject**, one line. For a mechanical change gca drafts one, such as
+   `bump zod from 3.22.0 to 3.23.8` or `release v1.1.0` (see
+   [Subject drafts](#subject-drafts)): Enter takes it, typing replaces it, and
+   Tab puts it on the line to edit. A header longer than 100 characters
+   (commitlint's default limit) is rejected.
 
 Esc or Ctrl-C cancels at any point and leaves your staged changes alone.
 `-a` and paths are tried out in a temporary copy of the index, so cancelling
@@ -160,7 +163,34 @@ An invalid `gca.push` value stops gca before anything is staged.
 When every changed file is documentation, a test, or CI configuration (for
 example `docs/`, `*_test.go`, `.github/workflows/`), `docs`, `test` or `ci` is
 pre-selected, as long as the model knows that type. You can still pick
-another one.
+another one. A release (see below) pre-selects `chore` the same way.
+
+### Subject drafts
+
+gca drafts the subject only when the staged change follows a pattern:
+
+| Staged change | Draft |
+| --- | --- |
+| Dependency versions in `package.json`, `Cargo.toml`, `pyproject.toml`, `requirements*.txt`, `go.mod` or a workflow's `uses:` lines | `bump zod from 3.22.0 to 3.23.8`, `downgrade …`, `bump vite and vitest`, `bump 12 dependencies` |
+| Dependencies added or removed | `add tempfile dependency`, `remove 3 dependencies` |
+| Only lockfiles | `update Cargo.lock`, `update lockfiles` |
+| The package's own version, with lockfiles and the changelog | `release v1.1.0`, and `chore` is pre-selected |
+| Files moved or renamed without edits | `rename lib.rs to core.rs`, `move util.rs to src/core/`, `rename lib/a/ to lib/b/` |
+| Files deleted | `remove scripts/old.sh`, `remove 4 files from legacy/` |
+| Tests, a doc or a workflow file added or removed | `add tests for parser`, `add install docs`, `add release workflow` |
+| One-word typo fixes in docs | `fix typo in README` |
+
+Anything else gets no draft, including a dependency bump that comes with a
+code change: people rarely keep a generic subject such as "update README".
+`--dry-run` prints the draft, and `--dry-run --json` has it as
+`subject_draft`.
+
+On the three test sets under [Accuracy](#accuracy), 5.2% of the commits people
+wrote get a draft (7,402 of 141,213): 3,359 dependency changes, 2,146 releases
+and 1,897 moved, removed or added files and typo fixes. For the releases,
+authors chose `chore` 96.6% of the time. A draft says what changed, while
+authors often wrote why: 6.8% of their subjects match the draft word for word,
+so a draft is only a default you can type over.
 
 ## Accuracy
 
@@ -299,10 +329,9 @@ builds the installer on Windows.
 
 ## Roadmap
 
-- Draft the subject line, still offline: templates for mechanical commits
-  (dependency bumps, renames, releases, commits that only add tests or docs),
-  and a small built-in model that completes the subject after the chosen type
-  and scope, pre-filled for you to accept or edit
+- Draft the subject of other commits too, still offline: a small built-in
+  model that completes the subject after the chosen type and scope (mechanical
+  commits already get [drafts](#subject-drafts))
 - Suggest the type from the subject too: words such as "speed up" or "rename"
   state the intent a diff often hides, which should help `refactor` and `perf` most
 - Adapt locally to the types a user picks in their own repositories, starting

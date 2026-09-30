@@ -262,6 +262,67 @@ fn dry_run_json_leaves_the_index_alone() {
 }
 
 #[test]
+fn mechanical_changes_get_a_subject_draft() {
+    let repo = Repo::new();
+    let manifest = |version: &str, zod: &str| {
+        format!(
+            "{{\n  \"name\": \"demo\",\n  \"version\": \"{version}\",\n  \"dependencies\": {{\n    \"zod\": \"^{zod}\"\n  }}\n}}\n"
+        )
+    };
+    repo.write("package.json", &manifest("1.0.0", "3.22.0"));
+    repo.git(&["add", "-A"]);
+    repo.git(&["commit", "-q", "-m", "chore: add zod"]);
+
+    repo.write("package.json", &manifest("1.0.0", "3.23.8"));
+    repo.git(&["add", "-A"]);
+    let v = json(&repo.gca(&["--dry-run", "--json"]));
+    assert_eq!(v["subject_draft"], "bump zod from 3.22.0 to 3.23.8");
+    let text = stdout(&repo.gca(&["--dry-run"]));
+    assert!(
+        text.contains("subject: bump zod from 3.22.0 to 3.23.8"),
+        "{text}"
+    );
+    repo.git(&["commit", "-q", "-m", "chore(deps): bump zod"]);
+
+    // A release draft also pre-selects chore.
+    repo.write("package.json", &manifest("1.1.0", "3.23.8"));
+    repo.write("CHANGELOG.md", "## 1.1.0\n\n- Newer zod.\n");
+    repo.git(&["add", "-A"]);
+    let v = json(&repo.gca(&["--dry-run", "--json"]));
+    assert_eq!(v["subject_draft"], "release v1.1.0");
+    assert_eq!(v["preselected"], "chore");
+    repo.git(&["commit", "-q", "-m", "chore: release v1.1.0"]);
+
+    // A moved file is one rename, even with git's rename detection turned off.
+    repo.git(&["config", "diff.renames", "false"]);
+    repo.git(&["mv", "src/lib.rs", "src/core.rs"]);
+    let v = json(&repo.gca(&["--dry-run", "--json"]));
+    assert_eq!(v["subject_draft"], "rename lib.rs to core.rs");
+    assert_eq!(
+        v["files"],
+        serde_json::json!([{"status": "R", "path": "src/core.rs", "from": "src/lib.rs"}])
+    );
+    assert_eq!(
+        (v["additions"].clone(), v["deletions"].clone()),
+        (0.into(), 0.into())
+    );
+    let text = stdout(&repo.gca(&["--dry-run"]));
+    assert!(text.starts_with("1 file "), "{text}");
+}
+
+#[test]
+fn ordinary_changes_get_no_subject_draft() {
+    let repo = Repo::new();
+    repo.write("src/lib.rs", "pub fn one() -> u32 {\n    2\n}\n");
+    repo.git(&["add", "-A"]);
+
+    let v = json(&repo.gca(&["--dry-run", "--json"]));
+    assert!(v["subject_draft"].is_null(), "{v}");
+    let text = stdout(&repo.gca(&["--dry-run"]));
+    assert!(!text.contains("subject:"), "{text}");
+}
+
+#[test]
 fn diff_settings_do_not_change_the_prediction() {
     let repo = Repo::new();
     repo.write(

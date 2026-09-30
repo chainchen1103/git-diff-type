@@ -1,6 +1,7 @@
 //! gca: suggests a Conventional Commit type for the changes you are about to
 //! commit, then commits them with `git commit`.
 
+mod draft;
 mod features;
 mod git;
 mod heuristics;
@@ -12,12 +13,13 @@ use anyhow::{bail, Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
 use console::style;
 use dialoguer::theme::{ColorfulTheme, SimpleTheme, Theme};
-use dialoguer::{Confirm, Input, Select};
+use dialoguer::{Completion, Confirm, Input, Select};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use draft::Draft;
 use git::FileChange;
 use history::ScopeHint;
 use model::Model;
@@ -262,13 +264,14 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
     };
 
     let model = load_model(cli.model.as_deref())?;
-    let (ranked, preselect) = rank(&model, &change, cli.topk.into())?;
+    let drafted = draft::draft(&change.files, &change.diff);
+    let (ranked, preselect) = rank(&model, &change, drafted.as_ref(), cli.topk.into())?;
     let paths: Vec<String> = change.files.iter().map(|f| f.path.clone()).collect();
     let hint = history::scope_hint(&git::recent_log(history::DEPTH), &paths);
 
     if cli.dry_run {
         if cli.json {
-            print_json(&change, &ranked, preselect, &hint)?;
+            print_json(&change, &ranked, preselect, &hint, drafted.as_ref())?;
         } else {
             print!("{}", summary(&change));
             for (i, (label, p)) in ranked.iter().enumerate() {
@@ -277,6 +280,9 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
             }
             if let Some(scope) = &hint.suggestion {
                 println!("scope: {scope}");
+            }
+            if let Some(d) = &drafted {
+                println!("subject: {}", d.subject);
             }
         }
         return Ok(ExitCode::SUCCESS);
@@ -342,8 +348,21 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
         Some((first, rest)) => (first.trim().to_string(), body_paragraphs(rest)),
         None => {
             let prefix = message::header(&kind, scope.as_deref(), cli.breaking, "");
-            let subject: String = Input::with_theme(&*theme)
-                .with_prompt(prefix.trim_end())
+            let prefix = prefix.trim_end();
+            // The plain theme adds its own ": " after the prompt.
+            let label = if no_color() {
+                prefix.trim_end_matches(':')
+            } else {
+                prefix
+            };
+            // A draft is shown as the default: Enter takes it, typing replaces
+            // it, and Tab puts it on the line to edit.
+            let completion = drafted.as_ref().map(|d| EditDraft(&d.subject));
+            let mut input = Input::with_theme(&*theme).with_prompt(label);
+            if let Some(c) = &completion {
+                input = input.default(c.0.to_string()).completion_with(c);
+            }
+            let subject: String = input
                 .validate_with(|s: &String| -> Result<(), String> {
                     message::check_subject(s)?;
                     message::check_header_len(&message::header(
@@ -446,11 +465,12 @@ fn load_model(path: Option<&Path>) -> Result<Model> {
 }
 
 /// Top suggestions and which one to pre-select. A path rule (docs, test, ci)
-/// is pre-selected even when the model ranks it lower, as long as the model
-/// knows that type.
+/// or the type a subject draft implies (a release is `chore`) is pre-selected
+/// even when the model ranks it lower, as long as the model knows that type.
 fn rank<'m>(
     model: &'m Model,
     change: &Change,
+    drafted: Option<&Draft>,
     topk: usize,
 ) -> Result<(Vec<(&'m str, f64)>, usize)> {
     let diff: String = change.diff.chars().take(MAX_DIFF_CHARS).collect();
@@ -467,6 +487,7 @@ fn rank<'m>(
     let mut ranked = model.topk(&probs, topk);
     let paths: Vec<String> = change.files.iter().map(|f| f.path.clone()).collect();
     let rule = heuristics::classify(&paths)
+        .or_else(|| drafted.and_then(|d| d.kind))
         .filter(|label| model.payload.classes.iter().any(|class| class == label));
     let preselect = match rule {
         None => 0,
@@ -563,11 +584,18 @@ fn print_json(
     ranked: &[(&str, f64)],
     preselect: usize,
     hint: &ScopeHint,
+    drafted: Option<&Draft>,
 ) -> Result<()> {
     let files: Vec<_> = change
         .files
         .iter()
-        .map(|f| serde_json::json!({ "status": f.status.to_string(), "path": f.path }))
+        .map(|f| {
+            let mut entry = serde_json::json!({ "status": f.status.to_string(), "path": f.path });
+            if let Some(old) = &f.old_path {
+                entry["from"] = old.as_str().into();
+            }
+            entry
+        })
         .collect();
     let suggestions: Vec<_> = ranked
         .iter()
@@ -581,6 +609,7 @@ fn print_json(
         "preselected": ranked[preselect].0,
         "scope": hint.suggestion,
         "repo_uses_scopes": hint.repo_uses_scopes,
+        "subject_draft": drafted.map(|d| d.subject.as_str()),
     });
     println!("{}", serde_json::to_string_pretty(&out)?);
     Ok(())
@@ -690,5 +719,16 @@ fn theme() -> Box<dyn Theme> {
         Box::new(SimpleTheme)
     } else {
         Box::new(ColorfulTheme::default())
+    }
+}
+
+/// Tab (or → at the end of an empty line) fills in the subject draft.
+struct EditDraft<'a>(&'a str);
+
+impl Completion for EditDraft<'_> {
+    fn get(&self, input: &str) -> Option<String> {
+        // Only on an empty line: dialoguer redraws from the cursor, which
+        // would be wrong anywhere but the end.
+        input.is_empty().then(|| self.0.to_string())
     }
 }

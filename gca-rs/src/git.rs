@@ -17,12 +17,15 @@ pub struct Stats {
 pub struct FileChange {
     pub status: char,
     pub path: String,
+    /// For a rename or copy: where it came from, and how similar it is (0-100).
+    pub old_path: Option<String>,
+    pub score: Option<u8>,
 }
 
 /// Settings that change what `git diff` prints. The model was trained on
 /// git's defaults, so these are pinned whatever the user has configured.
 /// Keep in sync with DIFF_CONFIG in miner.py; staged_diff() matches its DIFF_FLAGS.
-const DIFF_CONFIG: [&str; 8] = [
+const DIFF_CONFIG: [&str; 10] = [
     "-c",
     "diff.noprefix=false",
     "-c",
@@ -31,6 +34,9 @@ const DIFF_CONFIG: [&str; 8] = [
     "diff.relative=false",
     "-c",
     "core.quotePath=true",
+    // A moved file is one rename, not a deletion plus an addition.
+    "-c",
+    "diff.renames=true",
 ];
 
 fn git(index: Option<&Path>) -> Command {
@@ -192,13 +198,22 @@ fn parse_name_status_z(out: &str) -> Vec<FileChange> {
         let Some(letter) = status.chars().next() else {
             continue;
         };
-        let mut path = fields.next().unwrap_or_default();
-        if letter == 'R' || letter == 'C' {
-            path = fields.next().unwrap_or_default();
-        }
+        let first = fields.next().unwrap_or_default();
+        let (path, old_path, score) = if letter == 'R' || letter == 'C' {
+            let score = status[1..].parse::<u8>().ok();
+            (
+                fields.next().unwrap_or_default(),
+                Some(first.to_string()),
+                score,
+            )
+        } else {
+            (first, None, None)
+        };
         files.push(FileChange {
             status: letter,
             path: path.to_string(),
+            old_path,
+            score,
         });
     }
     files

@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Subject drafts** for mechanical changes: dependency bumps, additions and
+  removals in `package.json`, `Cargo.toml`, `pyproject.toml`,
+  `requirements*.txt`, `go.mod` and GitHub Actions workflows; lockfile
+  updates; releases; renames and moves; deleted files; new or removed tests,
+  docs and workflows; one-word typo fixes. The draft is the subject prompt's
+  default: Enter takes it, typing replaces it, and Tab puts it on the line to
+  edit. A release also pre-selects `chore`. Other changes get no draft.
+- `--dry-run` prints the draft; `--dry-run --json` adds `subject_draft`, and
+  `from` for a renamed file.
+
+### Fixed
+
+- With `diff.renames` turned off, a moved file was read as a deletion plus an
+  addition, and its whole content went to the model as changed lines. gca and
+  the miner now pin rename detection like the other diff settings.
+- With `NO_COLOR` set, the subject prompt showed two colons (`fix::`).
+
 ## 0.2.0 (2026-09-30)
 
 gca now follows `git commit`'s conventions: it commits what you staged, never

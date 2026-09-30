@@ -91,7 +91,9 @@ gca src/auth tests/auth    # 只 commit 這些路徑（包含新檔案），其�
 1. **類型**：依機率排序，按 Enter 採用預選的；不在前幾名時選「other type…」。
 2. **Scope**：只有專案本身在用 scope 時才會問。預填的是**這些檔案過去最常用的 scope**
    （從最近 500 個 commit 學來，不計 bot），可直接改或清空。
-3. **摘要**：一行描述；整行 header 超過 100 字元會被擋下（commitlint 的預設上限）。
+3. **摘要**：一行描述。機械性的變更會先擬好一個，例如 `bump zod from 3.22.0 to 3.23.8`、
+   `release v1.1.0`（見[摘要草稿](#摘要草稿)）：按 Enter 採用、直接打字取代、按 Tab 放到輸入列上修改。
+   整行 header 超過 100 字元會被擋下（commitlint 的預設上限）。
 
 Esc 或 Ctrl-C 隨時取消，暫存區不受影響。`-a` 和指定路徑都先在暫存區的臨時副本上試算，
 取消時真正的暫存區完全不變。
@@ -139,7 +141,30 @@ gca config remote upstream   # push 到這裡（未設定時：分支的 upstrea
 ### 預選規則
 
 當所有變更的檔案都屬於文件、測試或 CI 設定（例如 `docs/`、`*_test.go`、`.github/workflows/`），
-會預選 `docs`、`test` 或 `ci`（前提是模型有這個類型），你仍可改選其他類型。
+會預選 `docs`、`test` 或 `ci`（前提是模型有這個類型），你仍可改選其他類型。發版（見下方）也同樣會預選 `chore`。
+
+### 摘要草稿
+
+只有暫存的變更符合下列模式時，gca 才會擬好摘要：
+
+| 暫存的變更 | 草稿 |
+| --- | --- |
+| `package.json`、`Cargo.toml`、`pyproject.toml`、`requirements*.txt`、`go.mod` 或 workflow 的 `uses:` 裡的依賴版本 | `bump zod from 3.22.0 to 3.23.8`、`downgrade …`、`bump vite and vitest`、`bump 12 dependencies` |
+| 新增或移除依賴 | `add tempfile dependency`、`remove 3 dependencies` |
+| 只有 lockfile | `update Cargo.lock`、`update lockfiles` |
+| 套件本身的版本，連同 lockfile 與 changelog | `release v1.1.0`，並預選 `chore` |
+| 只搬移或改名、內容沒改的檔案 | `rename lib.rs to core.rs`、`move util.rs to src/core/`、`rename lib/a/ to lib/b/` |
+| 刪除檔案 | `remove scripts/old.sh`、`remove 4 files from legacy/` |
+| 新增或刪除測試、一份文件或一個 workflow 檔 | `add tests for parser`、`add install docs`、`add release workflow` |
+| 文件裡只改一個字的錯字 | `fix typo in README` |
+
+其他變更都不會有草稿，包括連同程式碼一起改的依賴升級：像「update README」這種籠統的摘要，人很少照用。
+`--dry-run` 會印出草稿，`--dry-run --json` 則放在 `subject_draft`。
+
+在[準確率](#準確率)的三組測試資料中，人寫的 commit 有 5.2% 會拿到草稿（141,213 個中的 7,402 個）：
+3,359 個依賴變更、2,146 個發版，以及 1,897 個搬移、刪除、新增檔案與錯字修正。發版的 commit，
+作者有 96.6% 選了 `chore`。草稿寫的是改了什麼，作者常寫的卻是為什麼改，只有 6.8% 的摘要與草稿一字不差，
+所以草稿只是預設值，直接打字就能換掉。
 
 ## 準確率
 
@@ -255,8 +280,8 @@ CI 在每次 push 時執行這些檢查（Rust 部分在 Windows、macOS、Linux
 
 ## Roadmap
 
-- 離線草擬摘要：機械性的 commit（升級套件、改名、發版、只新增測試或文件）用模板直接寫出；
-  其他的由內建小模型接在已選的類型與 scope 後面補完，預先填好，按 Enter 接受或直接修改
+- 其他 commit 也離線草擬摘要：由內建小模型接在已選的類型與 scope 後面補完
+  （機械性的 commit 已經有[草稿](#摘要草稿)）
 - 也從摘要判斷類型：「speed up」「rename」這類字眼說出了 diff 常看不出的意圖，
   預期對 `refactor`、`perf` 幫助最大
 - 依使用者在自己儲存庫的選擇做本地微調，先從用各儲存庫自己的類型分佈校正開始
