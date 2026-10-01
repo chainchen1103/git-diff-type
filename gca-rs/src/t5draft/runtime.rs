@@ -1,0 +1,646 @@
+//! Runs the subject model on the CPU with candle: a T5 encoder-decoder
+//! (CodeT5-small) read from one GGUF file that also holds its tokenizer.
+//! The file keeps the matrices in 8-bit blocks (67 MB); they are expanded to
+//! 32-bit floats when loaded (240 MB of memory), because candle multiplies
+//! 8-bit blocks quickly only when built for AVX2, and even then the encoder
+//! ran faster in floats.
+//!
+//! The network is written out here rather than taken from
+//! candle-transformers, whose T5 differs from the one the model was trained
+//! with (Hugging Face transformers): it scales the decoder's output by
+//! √d_model instead of 1/√d_model, which changes the probabilities (the
+//! confidence) though not the words, and its decoder uses the encoder's
+//! (bidirectional) position buckets, which differ from the ninth token on.
+//! Here the encoder's keys and values are also projected once per draft
+//! instead of once per generated token.
+
+use anyhow::{anyhow, bail, Context, Result};
+use candle_core::quantized::{gguf_file, GgmlDType, QTensor};
+use candle_core::{DType, Device, Module, Tensor, D};
+use candle_nn::Linear;
+use std::collections::HashMap;
+use std::path::Path;
+use tokenizers::{Tokenizer, TruncationDirection, TruncationParams, TruncationStrategy};
+
+use super::ModelDraft;
+
+/// The encoder reads at most this many tokens, as in training.
+const MAX_INPUT_TOKENS: usize = 512;
+/// A subject is at most this many tokens, as in training.
+const MAX_NEW_TOKENS: usize = 48;
+/// Metadata key of the tokenizer (its tokenizer.json) in the GGUF file.
+const TOKENIZER_KEY: &str = "tokenizer.huggingface.json";
+/// Metadata key of the input layout the model was trained on; gca refuses
+/// a model made for another layout.
+const FORMAT_KEY: &str = "gca.draft.input_format";
+const INPUT_FORMAT: u32 = 1;
+
+struct Config {
+    d_model: usize,
+    d_kv: usize,
+    num_heads: usize,
+    buckets: usize,
+    max_distance: usize,
+    eps: f64,
+    decoder_start: u32,
+    eos: u32,
+}
+
+struct Attention {
+    q: Linear,
+    k: Linear,
+    v: Linear,
+    o: Linear,
+}
+
+struct EncoderLayer {
+    norm: Tensor,
+    attn: Attention,
+    ff_norm: Tensor,
+    wi: Linear,
+    wo: Linear,
+}
+
+struct DecoderLayer {
+    norm: Tensor,
+    attn: Attention,
+    cross_norm: Tensor,
+    cross: Attention,
+    ff_norm: Tensor,
+    wi: Linear,
+    wo: Linear,
+}
+
+/// The subject model and its tokenizer.
+pub struct Drafter {
+    cfg: Config,
+    shared: Tensor,
+    lm_head: Linear,
+    encoder: Vec<EncoderLayer>,
+    encoder_bias: Tensor,
+    encoder_norm: Tensor,
+    decoder: Vec<DecoderLayer>,
+    decoder_bias: Tensor,
+    decoder_norm: Tensor,
+    tokenizer: Tokenizer,
+    device: Device,
+}
+
+struct Weights<'a> {
+    content: &'a gguf_file::Content,
+    file: std::fs::File,
+    device: &'a Device,
+}
+
+impl Weights<'_> {
+    fn qtensor(&mut self, name: &str) -> Result<QTensor> {
+        self.content
+            .tensor(&mut self.file, name, self.device)
+            .with_context(|| format!("the model has no usable {name}"))
+    }
+
+    fn float(&mut self, name: &str) -> Result<Tensor> {
+        Ok(self.qtensor(name)?.dequantize(self.device)?)
+    }
+
+    fn matmul(&mut self, name: &str) -> Result<Linear> {
+        Ok(Linear::new(self.float(name)?, None))
+    }
+
+    fn attention(&mut self, prefix: &str) -> Result<Attention> {
+        Ok(Attention {
+            q: self.matmul(&format!("{prefix}.q.weight"))?,
+            k: self.matmul(&format!("{prefix}.k.weight"))?,
+            v: self.matmul(&format!("{prefix}.v.weight"))?,
+            o: self.matmul(&format!("{prefix}.o.weight"))?,
+        })
+    }
+}
+
+fn meta_u32(content: &gguf_file::Content, key: &str) -> Result<u32> {
+    content
+        .metadata
+        .get(key)
+        .ok_or_else(|| anyhow!("the model file lacks {key}"))?
+        .to_u32()
+        .map_err(|e| anyhow!("{key}: {e}"))
+}
+
+impl Drafter {
+    /// Reads the model file written by [`convert`].
+    pub fn load(path: &Path) -> Result<Self> {
+        let device = Device::Cpu;
+        let mut file = std::fs::File::open(path)
+            .with_context(|| format!("could not open {}", path.display()))?;
+        let content = gguf_file::Content::read(&mut file)
+            .map_err(|e| anyhow!("{} is not a model file gca can read: {e}", path.display()))?;
+        let format = meta_u32(&content, FORMAT_KEY)?;
+        if format != INPUT_FORMAT {
+            bail!(
+                "{} was made for another version of gca (input format {format})",
+                path.display()
+            );
+        }
+        let u = |key: &str| meta_u32(&content, &format!("t5.{key}")).map(|v| v as usize);
+        let cfg = Config {
+            d_model: u("d_model")?,
+            d_kv: u("d_kv")?,
+            num_heads: u("num_heads")?,
+            buckets: u("relative_attention_num_buckets")?,
+            max_distance: u("relative_attention_max_distance")?,
+            eps: content
+                .metadata
+                .get("t5.layer_norm_epsilon")
+                .ok_or_else(|| anyhow!("the model file lacks t5.layer_norm_epsilon"))?
+                .to_f32()
+                .map_err(|e| anyhow!("t5.layer_norm_epsilon: {e}"))? as f64,
+            decoder_start: u("decoder_start_token_id")? as u32,
+            eos: u("eos_token_id")? as u32,
+        };
+        let (layers, decoder_layers) = (u("num_layers")?, u("num_decoder_layers")?);
+        let json = content
+            .metadata
+            .get(TOKENIZER_KEY)
+            .ok_or_else(|| anyhow!("the model file has no tokenizer"))?
+            .to_string()
+            .map_err(|e| anyhow!("{TOKENIZER_KEY}: {e}"))?;
+        let mut tokenizer: Tokenizer = json
+            .parse()
+            .map_err(|e| anyhow!("the model's tokenizer is invalid: {e}"))?;
+        tokenizer
+            .with_truncation(Some(TruncationParams {
+                max_length: MAX_INPUT_TOKENS,
+                strategy: TruncationStrategy::LongestFirst,
+                stride: 0,
+                direction: TruncationDirection::Right,
+            }))
+            .map_err(|e| anyhow!("{e}"))?;
+        tokenizer.with_padding(None);
+
+        let mut w = Weights {
+            content: &content,
+            file,
+            device: &device,
+        };
+        let shared = w.float("shared.weight")?;
+        let lm_head = Linear::new(shared.clone(), None);
+        let mut encoder = Vec::with_capacity(layers);
+        for i in 0..layers {
+            let p = format!("encoder.block.{i}.layer");
+            encoder.push(EncoderLayer {
+                norm: w.float(&format!("{p}.0.layer_norm.weight"))?,
+                attn: w.attention(&format!("{p}.0.SelfAttention"))?,
+                ff_norm: w.float(&format!("{p}.1.layer_norm.weight"))?,
+                wi: w.matmul(&format!("{p}.1.DenseReluDense.wi.weight"))?,
+                wo: w.matmul(&format!("{p}.1.DenseReluDense.wo.weight"))?,
+            });
+        }
+        let mut decoder = Vec::with_capacity(decoder_layers);
+        for i in 0..decoder_layers {
+            let p = format!("decoder.block.{i}.layer");
+            decoder.push(DecoderLayer {
+                norm: w.float(&format!("{p}.0.layer_norm.weight"))?,
+                attn: w.attention(&format!("{p}.0.SelfAttention"))?,
+                cross_norm: w.float(&format!("{p}.1.layer_norm.weight"))?,
+                cross: w.attention(&format!("{p}.1.EncDecAttention"))?,
+                ff_norm: w.float(&format!("{p}.2.layer_norm.weight"))?,
+                wi: w.matmul(&format!("{p}.2.DenseReluDense.wi.weight"))?,
+                wo: w.matmul(&format!("{p}.2.DenseReluDense.wo.weight"))?,
+            });
+        }
+        Ok(Drafter {
+            encoder_bias: w
+                .float("encoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight")?,
+            encoder_norm: w.float("encoder.final_layer_norm.weight")?,
+            decoder_bias: w
+                .float("decoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight")?,
+            decoder_norm: w.float("decoder.final_layer_norm.weight")?,
+            cfg,
+            shared,
+            lm_head,
+            encoder,
+            decoder,
+            tokenizer,
+            device,
+        })
+    }
+
+    /// The input's token ids, cut to what the encoder reads.
+    pub fn tokens(&self, input: &str) -> Result<Vec<u32>> {
+        let enc = self
+            .tokenizer
+            .encode(input, true)
+            .map_err(|e| anyhow!("could not tokenize: {e}"))?;
+        Ok(enc.get_ids().to_vec())
+    }
+
+    /// The subject for a model input (see [`super::input::format`]), by
+    /// greedy decoding, with the mean log-probability of its tokens and of
+    /// the end token.
+    pub fn draft(&self, input: &str) -> Result<ModelDraft> {
+        Ok(self.generate(&self.tokens(input)?)?.draft)
+    }
+
+    /// Greedy decoding of the input's token ids.
+    pub fn generate(&self, ids: &[u32]) -> Result<Generated> {
+        let encoded = self.encode(ids)?;
+        let mut cache = Cache {
+            self_kv: vec![None; self.decoder.len()],
+            cross_kv: self
+                .decoder
+                .iter()
+                .map(|l| {
+                    Ok((
+                        self.heads(&l.cross.k.forward(&encoded)?)?,
+                        self.heads(&l.cross.v.forward(&encoded)?)?,
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?,
+        };
+        let mut out = Vec::new();
+        let mut token = self.cfg.decoder_start;
+        let (mut log_prob, mut count) = (0.0f64, 0usize);
+        for pos in 0..MAX_NEW_TOKENS {
+            let logits: Vec<f32> = self.decode_step(token, pos, &mut cache)?.to_vec1()?;
+            let (best, top) =
+                logits
+                    .iter()
+                    .enumerate()
+                    .fold(
+                        (0, f32::NEG_INFINITY),
+                        |acc, (i, &v)| if v > acc.1 { (i, v) } else { acc },
+                    );
+            let sum: f64 = logits.iter().map(|&v| ((v - top) as f64).exp()).sum();
+            log_prob += -(sum.ln());
+            count += 1;
+            token = best as u32;
+            if token == self.cfg.eos {
+                break;
+            }
+            out.push(token);
+        }
+        let text = self
+            .tokenizer
+            .decode(&out, true)
+            .map_err(|e| anyhow!("could not decode: {e}"))?;
+        Ok(Generated {
+            draft: ModelDraft {
+                subject: super::input::py_strip(&text).to_string(),
+                confidence: (log_prob / count.max(1) as f64) as f32,
+            },
+            steps: count,
+        })
+    }
+
+    /// (len, d_model) -> (heads, len, d_kv)
+    fn heads(&self, x: &Tensor) -> Result<Tensor> {
+        let len = x.dim(0)?;
+        Ok(x.reshape((len, self.cfg.num_heads, self.cfg.d_kv))?
+            .transpose(0, 1)?
+            .contiguous()?)
+    }
+
+    fn encode(&self, ids: &[u32]) -> Result<Tensor> {
+        let len = ids.len();
+        let mut x = self.embed(ids)?;
+        let buckets: Vec<u32> = (0..len)
+            .flat_map(|i| (0..len).map(move |j| (i, j)))
+            .map(|(i, j)| {
+                bucket(
+                    j as i64 - i as i64,
+                    true,
+                    self.cfg.buckets,
+                    self.cfg.max_distance,
+                )
+            })
+            .collect();
+        let bias = self.position_bias(&self.encoder_bias, buckets, len, len)?;
+        for l in &self.encoder {
+            let h = rms_norm(&x, &l.norm, self.cfg.eps)?;
+            let q = self.heads(&l.attn.q.forward(&h)?)?;
+            let k = self.heads(&l.attn.k.forward(&h)?)?;
+            let v = self.heads(&l.attn.v.forward(&h)?)?;
+            let a = attend(&q, &k, &v, Some(&bias))?;
+            x = (x + l.attn.o.forward(&merge(&a)?)?)?;
+            let h = rms_norm(&x, &l.ff_norm, self.cfg.eps)?;
+            x = (x + l.wo.forward(&l.wi.forward(&h)?.relu()?)?)?;
+        }
+        rms_norm(&x, &self.encoder_norm, self.cfg.eps)
+    }
+
+    /// One decoder step for the token at `pos`: the logits of the next one.
+    fn decode_step(&self, token: u32, pos: usize, cache: &mut Cache) -> Result<Tensor> {
+        let mut x = self.embed(&[token])?;
+        let buckets: Vec<u32> = (0..=pos)
+            .map(|j| {
+                bucket(
+                    j as i64 - pos as i64,
+                    false,
+                    self.cfg.buckets,
+                    self.cfg.max_distance,
+                )
+            })
+            .collect();
+        let bias = self.position_bias(&self.decoder_bias, buckets, 1, pos + 1)?;
+        for (i, l) in self.decoder.iter().enumerate() {
+            let h = rms_norm(&x, &l.norm, self.cfg.eps)?;
+            let q = self.heads(&l.attn.q.forward(&h)?)?;
+            let mut k = self.heads(&l.attn.k.forward(&h)?)?;
+            let mut v = self.heads(&l.attn.v.forward(&h)?)?;
+            if let Some((pk, pv)) = &cache.self_kv[i] {
+                k = Tensor::cat(&[pk, &k], 1)?;
+                v = Tensor::cat(&[pv, &v], 1)?;
+            }
+            let a = attend(&q, &k, &v, Some(&bias))?;
+            cache.self_kv[i] = Some((k, v));
+            x = (x + l.attn.o.forward(&merge(&a)?)?)?;
+            let h = rms_norm(&x, &l.cross_norm, self.cfg.eps)?;
+            let q = self.heads(&l.cross.q.forward(&h)?)?;
+            let (ck, cv) = &cache.cross_kv[i];
+            let a = attend(&q, ck, cv, None)?;
+            x = (x + l.cross.o.forward(&merge(&a)?)?)?;
+            let h = rms_norm(&x, &l.ff_norm, self.cfg.eps)?;
+            x = (x + l.wo.forward(&l.wi.forward(&h)?.relu()?)?)?;
+        }
+        let x = rms_norm(&x, &self.decoder_norm, self.cfg.eps)?;
+        // the output embedding is the input one: scale by 1/√d_model first
+        let x = x.affine((self.cfg.d_model as f64).powf(-0.5), 0.0)?;
+        Ok(self.lm_head.forward(&x)?.squeeze(0)?)
+    }
+
+    fn embed(&self, ids: &[u32]) -> Result<Tensor> {
+        let ids = Tensor::new(ids, &self.device)?;
+        Ok(self.shared.index_select(&ids, 0)?)
+    }
+
+    /// (heads, q_len, k_len) biases for the given buckets, in row order.
+    fn position_bias(
+        &self,
+        table: &Tensor,
+        buckets: Vec<u32>,
+        q_len: usize,
+        k_len: usize,
+    ) -> Result<Tensor> {
+        let idx = Tensor::from_vec(buckets, q_len * k_len, &self.device)?;
+        Ok(table
+            .index_select(&idx, 0)?
+            .reshape((q_len, k_len, self.cfg.num_heads))?
+            .permute((2, 0, 1))?
+            .contiguous()?)
+    }
+}
+
+/// What greedy decoding wrote.
+pub struct Generated {
+    pub draft: ModelDraft,
+    /// Tokens generated, the end token included if it came.
+    pub steps: usize,
+}
+
+/// The decoder's keys and values: its own, growing with each token, and the
+/// encoder's, projected once.
+struct Cache {
+    self_kv: Vec<Option<(Tensor, Tensor)>>,
+    cross_kv: Vec<(Tensor, Tensor)>,
+}
+
+fn rms_norm(x: &Tensor, weight: &Tensor, eps: f64) -> Result<Tensor> {
+    let variance = x.sqr()?.mean_keepdim(D::Minus1)?;
+    Ok(x.broadcast_div(&(variance + eps)?.sqrt()?)?
+        .broadcast_mul(weight)?)
+}
+
+/// T5 attention: no 1/√d scaling, an additive position bias.
+fn attend(q: &Tensor, k: &Tensor, v: &Tensor, bias: Option<&Tensor>) -> Result<Tensor> {
+    let mut scores = q.matmul(&k.t()?)?;
+    if let Some(bias) = bias {
+        scores = scores.broadcast_add(bias)?;
+    }
+    Ok(candle_nn::ops::softmax_last_dim(&scores)?.matmul(v)?)
+}
+
+/// (heads, len, d_kv) -> (len, heads * d_kv)
+fn merge(x: &Tensor) -> Result<Tensor> {
+    let (heads, len, d) = x.dims3()?;
+    Ok(x.transpose(0, 1)?.contiguous()?.reshape((len, heads * d))?)
+}
+
+/// T5's relative position bucket for key position minus query position, as
+/// transformers computes it (in 32-bit floats).
+fn bucket(relative: i64, bidirectional: bool, num_buckets: usize, max_distance: usize) -> u32 {
+    let mut buckets = num_buckets as i64;
+    let mut base = 0;
+    let n = if bidirectional {
+        buckets /= 2;
+        if relative > 0 {
+            base = buckets;
+        }
+        relative.abs()
+    } else {
+        -relative.min(0)
+    };
+    let max_exact = buckets / 2;
+    let offset = if n < max_exact {
+        n
+    } else {
+        let scale = ((max_distance as f64) / (max_exact as f64)).ln() as f32;
+        let large = max_exact
+            + ((n as f32 / max_exact as f32).ln() / scale * (buckets - max_exact) as f32) as i64;
+        large.min(buckets - 1)
+    };
+    (base + offset) as u32
+}
+
+/// What [`convert`] wrote.
+pub struct Converted {
+    pub tensors: usize,
+    pub quantized: usize,
+    pub bytes: u64,
+}
+
+/// Writes a fine-tuned checkpoint (a transformers folder with config.json,
+/// model.safetensors and tokenizer.json) as one GGUF file gca can load: the
+/// matrices in 8-bit blocks (Q8_0) if `quantize`, the rest in 32-bit floats,
+/// and the configuration and tokenizer as metadata.
+pub fn convert(checkpoint: &Path, out: &Path, quantize: bool) -> Result<Converted> {
+    let read = |name: &str| {
+        std::fs::read_to_string(checkpoint.join(name))
+            .with_context(|| format!("could not read {}", checkpoint.join(name).display()))
+    };
+    let config: serde_json::Value = serde_json::from_str(&read("config.json")?)?;
+    let tokenizer = read("tokenizer.json")?;
+    tokenizer
+        .parse::<Tokenizer>()
+        .map_err(|e| anyhow!("tokenizer.json is invalid: {e}"))?;
+    if config["model_type"] != "t5"
+        || config["feed_forward_proj"] != "relu"
+        || config["tie_word_embeddings"] == false
+    {
+        bail!("only T5 models with ReLU feed-forward layers and tied embeddings are supported");
+    }
+    let num = |key: &str| -> Result<u32> {
+        config[key]
+            .as_u64()
+            .map(|v| v as u32)
+            .ok_or_else(|| anyhow!("config.json lacks {key}"))
+    };
+    let mut metadata: Vec<(String, gguf_file::Value)> = vec![
+        (
+            "general.architecture".into(),
+            gguf_file::Value::String("t5".into()),
+        ),
+        (FORMAT_KEY.into(), gguf_file::Value::U32(INPUT_FORMAT)),
+        (TOKENIZER_KEY.into(), gguf_file::Value::String(tokenizer)),
+        (
+            "t5.layer_norm_epsilon".into(),
+            gguf_file::Value::F32(config["layer_norm_epsilon"].as_f64().unwrap_or(1e-6) as f32),
+        ),
+    ];
+    for key in [
+        "vocab_size",
+        "d_model",
+        "d_kv",
+        "d_ff",
+        "num_layers",
+        "num_decoder_layers",
+        "num_heads",
+        "relative_attention_num_buckets",
+        "relative_attention_max_distance",
+        "decoder_start_token_id",
+        "eos_token_id",
+        "pad_token_id",
+    ] {
+        metadata.push((format!("t5.{key}"), gguf_file::Value::U32(num(key)?)));
+    }
+    let tensors: HashMap<String, Tensor> =
+        candle_core::safetensors::load(checkpoint.join("model.safetensors"), &Device::Cpu)?;
+    let mut names: Vec<&String> = tensors
+        .keys()
+        .filter(|n| n.as_str() != "lm_head.weight")
+        .collect();
+    names.sort();
+    let mut quantized = 0;
+    let mut qtensors = Vec::with_capacity(names.len());
+    for name in &names {
+        let t = tensors[*name].to_dtype(DType::F32)?;
+        let q = if quantize && t.rank() == 2 && t.dim(1)? % GgmlDType::Q8_0.block_size() == 0 {
+            quantized += 1;
+            QTensor::quantize(&t, GgmlDType::Q8_0)?
+        } else {
+            QTensor::quantize(&t, GgmlDType::F32)?
+        };
+        qtensors.push(q);
+    }
+    let mut file = std::fs::File::create(out)
+        .with_context(|| format!("could not create {}", out.display()))?;
+    let meta: Vec<(&str, &gguf_file::Value)> =
+        metadata.iter().map(|(k, v)| (k.as_str(), v)).collect();
+    let refs: Vec<(&str, &QTensor)> = names
+        .iter()
+        .map(|n| n.as_str())
+        .zip(qtensors.iter())
+        .collect();
+    gguf_file::write(&mut file, &meta, &refs)?;
+    Ok(Converted {
+        tensors: names.len(),
+        quantized,
+        bytes: std::fs::metadata(out)?.len(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Where transformers' buckets change (key minus query position, the
+    /// bucket from there on), for 32 buckets and a distance of 128.
+    const BIDIRECTIONAL: [(i64, u32); 30] = [
+        (-90, 14),
+        (-63, 13),
+        (-45, 12),
+        (-31, 11),
+        (-22, 10),
+        (-15, 9),
+        (-11, 8),
+        (-7, 7),
+        (-6, 6),
+        (-5, 5),
+        (-4, 4),
+        (-3, 3),
+        (-2, 2),
+        (-1, 1),
+        (0, 0),
+        (1, 17),
+        (2, 18),
+        (3, 19),
+        (4, 20),
+        (5, 21),
+        (6, 22),
+        (7, 23),
+        (8, 24),
+        (12, 25),
+        (16, 26),
+        (23, 27),
+        (32, 28),
+        (46, 29),
+        (64, 30),
+        (91, 31),
+    ];
+    const UNIDIRECTIONAL: [(i64, u32); 31] = [
+        (-112, 30),
+        (-98, 29),
+        (-86, 28),
+        (-76, 27),
+        (-66, 26),
+        (-58, 25),
+        (-51, 24),
+        (-45, 23),
+        (-39, 22),
+        (-34, 21),
+        (-30, 20),
+        (-26, 19),
+        (-23, 18),
+        (-20, 17),
+        (-18, 16),
+        (-15, 15),
+        (-14, 14),
+        (-13, 13),
+        (-12, 12),
+        (-11, 11),
+        (-10, 10),
+        (-9, 9),
+        (-8, 8),
+        (-7, 7),
+        (-6, 6),
+        (-5, 5),
+        (-4, 4),
+        (-3, 3),
+        (-2, 2),
+        (-1, 1),
+        (0, 0),
+    ];
+
+    fn check(changes: &[(i64, u32)], first: u32, bidirectional: bool) {
+        let mut expected = first;
+        let mut next = changes.iter().peekable();
+        for rel in -2048..=2048 {
+            if let Some(&&(at, b)) = next.peek() {
+                if rel == at {
+                    expected = b;
+                    next.next();
+                }
+            }
+            assert_eq!(
+                bucket(rel, bidirectional, 32, 128),
+                expected,
+                "relative position {rel}"
+            );
+        }
+    }
+
+    #[test]
+    fn position_buckets_match_transformers() {
+        check(&BIDIRECTIONAL, 15, true);
+        check(&UNIDIRECTIONAL, 31, false);
+    }
+}

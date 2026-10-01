@@ -617,10 +617,17 @@ pub fn push(remote: Option<&str>) -> Result<()> {
 }
 
 pub fn get_config(key: &str) -> Option<String> {
-    let out = Command::new("git")
-        .args(["config", "--get", key])
-        .output()
-        .ok()?;
+    config_value(&["config", "--get", key])
+}
+
+/// A setting that names a file, with a leading `~/` expanded as git does.
+#[cfg_attr(not(feature = "t5"), allow(dead_code))]
+pub fn get_config_path(key: &str) -> Option<String> {
+    config_value(&["config", "--path", "--get", key])
+}
+
+fn config_value(args: &[&str]) -> Option<String> {
+    let out = Command::new("git").args(args).output().ok()?;
     if !out.status.success() {
         return None;
     }
@@ -635,6 +642,24 @@ pub fn get_config(key: &str) -> Option<String> {
 pub fn set_config(key: &str, value: &str, local: bool) -> Result<()> {
     let scope = if local { "--local" } else { "--global" };
     run(None, &["config", scope, key, value]).map(|_| ())
+}
+
+/// Removes a setting; one that is not set is fine.
+#[cfg_attr(not(feature = "t5"), allow(dead_code))]
+pub fn unset_config(key: &str, local: bool) -> Result<()> {
+    let scope = if local { "--local" } else { "--global" };
+    let out = git(None)
+        .args(["config", scope, "--unset", key])
+        .output()
+        .map_err(|e| anyhow!("could not run git: {e}"))?;
+    // exit code 5: the key was not set
+    match out.status.code() {
+        Some(0 | 5) => Ok(()),
+        _ => bail!(
+            "`git config --unset {key}` failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        ),
+    }
 }
 
 #[cfg(test)]

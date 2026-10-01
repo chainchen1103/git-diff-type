@@ -245,6 +245,35 @@ authors chose `chore` 96.6% of the time. A draft says what changed, while
 authors often wrote why: 6.8% of their subjects match the draft word for word,
 so a draft is only a default you can type over.
 
+### Drafts from a model (experimental)
+
+gca can also draft the subject of any change with a small neural model,
+CodeT5-small fine-tuned on the same commits ([draft_model/](draft_model/README.md)).
+It runs offline on the CPU, in builds with the `t5` feature, from a model
+file of 67 MB that is not part of a release yet (`draft_model/README.md`
+describes how it is made):
+
+```
+cargo install --path gca-rs --features t5
+gca config draft-model path/to/gca-draft-q8.gguf
+```
+
+The model reads the type and scope you chose, the files, the headers of a few
+earlier commits and the changed lines. It drafts in the background while the
+type prompt is open, for the type and scope gca suggests, and again if you
+pick others. Its draft is offered only when the model is sure enough of it
+(the mean log-probability of its tokens is -0.3 or more); otherwise the
+rules above draft as before. On the recent commits of projects gca never
+saw, 14.5% of the commits get a model draft; 34.3% of those are the author's
+subject exactly and 56.0% save at least half the typing.
+
+`--dry-run` prints the model's draft and its confidence, offered or not;
+`--dry-run --json` has it as `model_draft`, and `subject_draft_source` says
+whether the model or the rules wrote `subject_draft`. `--draft-model <FILE>`
+or `GCA_DRAFT_MODEL` name the file for one run, and an empty
+`GCA_DRAFT_MODEL` turns the model off. A draft takes about half a second of
+CPU and 250 MB of memory. The commit hook does not use the model.
+
 ## Accuracy
 
 The model is trained on **437,945 commits** from 5,925 repositories: 342,347 written by people in 36 open-source projects that follow Conventional Commits, landed before 2026-04-20 (bot commits left out), and 95,598 from the public CommitChronicle and CommitBench datasets, without any organization that owns a test project. Testing uses three separate sets of commits mined from public
@@ -501,9 +530,9 @@ builds the installer on Windows.
 
 ## Roadmap
 
-- Draft the subject of other commits too, still offline: a small built-in
-  model that completes the subject after the chosen type and scope (mechanical
-  commits already get [drafts](#subject-drafts))
+- Ship the [subject model](#drafts-from-a-model-experimental): publish its
+  file with the releases, set its threshold on other projects than the ones
+  it is tested on, and complete the subject as you type
 - Better `refactor` / `perf`. Signs of whether behavior changed (0.5) help
   a little, more often putting them among the three, but the diff alone
   still almost never puts them first; the subject is what finds them

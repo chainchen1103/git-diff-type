@@ -288,6 +288,8 @@ fn mechanical_changes_get_a_subject_draft() {
     repo.git(&["add", "-A"]);
     let v = json(&repo.gca(&["--dry-run", "--json"]));
     assert_eq!(v["subject_draft"], "bump zod from 3.22.0 to 3.23.8");
+    assert_eq!(v["subject_draft_source"], "rules");
+    assert!(v["model_draft"].is_null(), "no model is set: {v}");
     let text = stdout(&repo.gca(&["--dry-run"]));
     assert!(
         text.contains("subject: bump zod from 3.22.0 to 3.23.8"),
@@ -732,8 +734,104 @@ fn ordinary_changes_get_no_subject_draft() {
 
     let v = json(&repo.gca(&["--dry-run", "--json"]));
     assert!(v["subject_draft"].is_null(), "{v}");
+    assert!(v["subject_draft_source"].is_null(), "{v}");
     let text = stdout(&repo.gca(&["--dry-run"]));
     assert!(!text.contains("subject:"), "{text}");
+}
+
+#[cfg(feature = "t5")]
+#[test]
+fn the_draft_model_setting_is_stored_and_checked() {
+    let repo = Repo::new();
+    let out = repo.gca(&["config", "draft-model"]);
+    assert!(
+        stdout(&out).contains("gca.draftModel = (not set"),
+        "{}",
+        stdout(&out)
+    );
+    let out = repo.gca(&["config", "draft-model", "missing.gguf"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("no file at"), "{}", stderr(&out));
+
+    // a relative path is stored absolute, so it works from anywhere
+    repo.write("models/m.gguf", "not really a model");
+    let out = repo.gca(&["config", "draft-model", "models/m.gguf", "--local"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let stored = repo.git(&["config", "gca.draftModel"]);
+    assert!(Path::new(stored.trim()).is_absolute(), "{stored}");
+    assert!(stored.trim().ends_with("m.gguf"), "{stored}");
+
+    // a file that is not a model: a warning, and the rules still draft
+    repo.write("package.json", "{\n  \"version\": \"1.0.0\"\n}\n");
+    repo.git(&["add", "-A"]);
+    repo.git(&["commit", "-q", "-m", "chore: add package.json"]);
+    repo.write("package.json", "{\n  \"version\": \"1.1.0\"\n}\n");
+    repo.write("CHANGELOG.md", "## 1.1.0\n");
+    repo.git(&["add", "package.json", "CHANGELOG.md"]);
+    let out = repo.gca(&["--dry-run", "--json"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("could not use the subject model"),
+        "{}",
+        stderr(&out)
+    );
+    let v = json(&out);
+    assert_eq!(v["subject_draft"], "release v1.1.0");
+    assert_eq!(v["subject_draft_source"], "rules");
+    assert!(v["model_draft"].is_null(), "{v}");
+
+    // GCA_DRAFT_MODEL="" turns the model off without a warning
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_gca"));
+    repo.env(&mut cmd);
+    let out = cmd
+        .args(["--dry-run"])
+        .env("GCA_DRAFT_MODEL", "")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stderr(&out).is_empty(), "{}", stderr(&out));
+
+    // "" removes the setting
+    let out = repo.gca(&["config", "draft-model", "", "--local"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let out = repo.gca(&["config", "draft-model"]);
+    assert!(stdout(&out).contains("(not set"), "{}", stdout(&out));
+}
+
+/// With a real model file (not in the repository; GCA_TEST_DRAFT_MODEL
+/// names one), the dry run reports what the model wrote and for which type.
+#[cfg(feature = "t5")]
+#[test]
+fn the_draft_model_writes_for_the_suggested_type() {
+    let Some(model) = std::env::var_os("GCA_TEST_DRAFT_MODEL") else {
+        eprintln!("skipped: set GCA_TEST_DRAFT_MODEL to a model file");
+        return;
+    };
+    let repo = Repo::new();
+    repo.write("package.json", "{\n  \"version\": \"1.0.0\"\n}\n");
+    repo.git(&["add", "-A"]);
+    repo.git(&["commit", "-q", "-m", "chore: release 1.0.0"]);
+    repo.write("package.json", "{\n  \"version\": \"1.1.0\"\n}\n");
+    repo.git(&["add", "-A"]);
+    let model = model.to_string_lossy().into_owned();
+    let out = repo.gca(&["--dry-run", "--json", "--draft-model", &model]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let v = json(&out);
+    let draft = &v["model_draft"];
+    assert_eq!(draft["type"], v["preselected"], "{v}");
+    assert!(
+        draft["subject"].as_str().is_some_and(|s| !s.is_empty()),
+        "{v}"
+    );
+    assert!(
+        draft["confidence"].as_f64().is_some_and(|c| c <= 0.0),
+        "{v}"
+    );
+    if draft["offered"] == true {
+        assert_eq!(v["subject_draft"], draft["subject"]);
+        assert_eq!(v["subject_draft_source"], "model");
+    }
 }
 
 #[test]

@@ -1,5 +1,28 @@
 # Changelog
 
+## Unreleased
+
+Builds with the `t5` feature can draft subjects with a small model.
+
+### Added (experimental)
+
+- **Subject drafts from a model** for any change, in builds with the `t5`
+  feature (`cargo install --path gca-rs --features t5`) and with a model
+  file set by `gca config draft-model <FILE>`, `--draft-model` or
+  `GCA_DRAFT_MODEL`. CodeT5-small, fine-tuned on the training commits, reads
+  the chosen type and scope, the files, the headers of a few earlier commits
+  and the changed lines; gca runs it on the CPU with candle while the type
+  prompt is open and offers its draft when the model is sure enough of it,
+  else the rules' draft as before. On recent commits of projects gca never
+  saw, 14.5% of the commits get a model draft; 34.3% of those are the
+  author's subject exactly and 56.0% save at least half the typing.
+  `--dry-run` shows the model's draft and confidence, and `--dry-run --json`
+  adds `model_draft` and `subject_draft_source`. The model file (67 MB) is
+  not released yet.
+- `draft_model/` prepares the data, trains the model on an NVIDIA GPU,
+  scores it and documents the results; `gca draft-model convert` (in `t5`
+  builds) writes a checkpoint as the file gca loads.
+
 ## 0.5.1 (2026-10-04)
 
 gca reads the project's history faster where many files come and go, and

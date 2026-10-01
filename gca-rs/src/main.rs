@@ -11,6 +11,7 @@ mod hook;
 mod message;
 mod model;
 mod subject;
+mod t5draft;
 
 use anyhow::{bail, Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
@@ -136,6 +137,12 @@ struct Cli {
     #[arg(long, value_name = "FILE")]
     model: Option<PathBuf>,
 
+    /// Draft the subject with this model file (overrides gca.draftModel and
+    /// GCA_DRAFT_MODEL; see `gca config draft-model`).
+    #[cfg(feature = "t5")]
+    #[arg(long, value_name = "FILE")]
+    draft_model: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Option<Cmd>,
 }
@@ -157,6 +164,40 @@ enum Cmd {
     Hook {
         #[command(subcommand)]
         action: HookCmd,
+    },
+    /// Make and check the subject model's file (for developers).
+    #[cfg(feature = "t5")]
+    #[command(hide = true)]
+    DraftModel {
+        #[command(subcommand)]
+        action: DraftModelCmd,
+    },
+}
+
+#[cfg(feature = "t5")]
+#[derive(Subcommand, Debug)]
+enum DraftModelCmd {
+    /// Write a fine-tuned checkpoint folder (config.json, model.safetensors,
+    /// tokenizer.json) as the model file gca loads.
+    Convert {
+        checkpoint: PathBuf,
+        out: PathBuf,
+        /// Keep every weight in 32-bit floats (four times the size), to
+        /// check the runtime against transformers.
+        #[arg(long)]
+        float: bool,
+    },
+    /// Draft a subject for each JSON line {"id", "i"} of model inputs and
+    /// print one JSON line each, with the time it took.
+    Bench {
+        model: PathBuf,
+        inputs: PathBuf,
+        /// Only the first N inputs.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Also print the input's token ids.
+        #[arg(long)]
+        ids: bool,
     },
 }
 
@@ -197,6 +238,15 @@ enum ConfigCmd {
     Order {
         #[arg(value_parser = ["type-first", "subject-first"])]
         order: Option<String>,
+        /// Store the setting in this repository only.
+        #[arg(long)]
+        local: bool,
+    },
+    /// The subject model file: gca drafts subjects with it when it is sure
+    /// enough of one. "" turns it off.
+    #[cfg(feature = "t5")]
+    DraftModel {
+        path: Option<String>,
         /// Store the setting in this repository only.
         #[arg(long)]
         local: bool,
@@ -266,6 +316,8 @@ fn main() -> ExitCode {
                 Ok(ExitCode::SUCCESS)
             }
         },
+        #[cfg(feature = "t5")]
+        Some(Cmd::DraftModel { action }) => draft_model_cmd(action),
         None => commit_flow(&cli),
     };
     match result {
@@ -276,6 +328,60 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+#[cfg(feature = "t5")]
+fn draft_model_cmd(action: &DraftModelCmd) -> Result<ExitCode> {
+    use std::io::{BufRead, Write};
+    match action {
+        DraftModelCmd::Convert {
+            checkpoint,
+            out,
+            float,
+        } => {
+            let done = t5draft::runtime::convert(checkpoint, out, !float)?;
+            println!(
+                "wrote {} ({:.1} MB): {} tensors, {} of them in 8-bit blocks",
+                out.display(),
+                done.bytes as f64 / 1e6,
+                done.tensors,
+                done.quantized
+            );
+        }
+        DraftModelCmd::Bench {
+            model,
+            inputs,
+            limit,
+            ids,
+        } => {
+            let t0 = std::time::Instant::now();
+            let drafter = t5draft::runtime::Drafter::load(model)?;
+            eprintln!("loaded in {} ms", t0.elapsed().as_millis());
+            let file = std::fs::File::open(inputs)
+                .with_context(|| format!("could not open {}", inputs.display()))?;
+            let mut out = std::io::stdout().lock();
+            for line in std::io::BufReader::new(file)
+                .lines()
+                .take(limit.unwrap_or(usize::MAX))
+            {
+                let row: serde_json::Value = serde_json::from_str(&line?)?;
+                let input = row["i"].as_str().context("an input line has no \"i\"")?;
+                let t0 = std::time::Instant::now();
+                let tokens = drafter.tokens(input)?;
+                let done = drafter.generate(&tokens)?;
+                let ms = t0.elapsed().as_secs_f64() * 1000.0;
+                let mut rec = serde_json::json!({
+                    "id": row["id"], "greedy": done.draft.subject, "confidence": done.draft.confidence,
+                    "ms": ms, "in_tokens": tokens.len(), "out_tokens": done.steps,
+                });
+                if *ids {
+                    rec["ids"] = serde_json::json!(tokens);
+                }
+                writeln!(out, "{rec}")?;
+            }
+        }
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Ctrl-C inside a prompt arrives as an interrupted read.
@@ -366,11 +472,40 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
     )?;
     let hint = history::scope_hint(&log, &paths, me.as_deref());
 
+    // The subject model, if there is one, loads and drafts in the background
+    // for the type and scope gca suggests while the prompts are open.
+    let guess_kind = cli
+        .kind
+        .clone()
+        .unwrap_or_else(|| ranked[preselect].0.to_string());
+    let guess_scope = match &cli.scope {
+        Some(s) => message::normalize_scope(s).ok().flatten(),
+        None => hint.suggestion.clone().filter(|_| hint.repo_uses_scopes),
+    };
+    let mut background = draft_model_path(cli)
+        .filter(|_| cli.message.is_empty() && (cli.dry_run || interactive()))
+        .map(|path| {
+            let input = t5draft::Change {
+                diff: change.diff.clone(),
+                log: log.clone(),
+                staged: paths.clone(),
+                me: me.clone(),
+            };
+            t5draft::Background::start(path, input, &guess_kind, guess_scope.as_deref())
+        });
+
     if cli.dry_run {
+        let model_draft = background
+            .take()
+            .and_then(|b| b.finish(&guess_kind, guess_scope.as_deref()));
+        let offered = offered_draft(model_draft.as_ref(), drafted.as_ref());
         if cli.json {
             let extras = JsonExtras {
                 hint: &hint,
-                drafted: drafted.as_ref(),
+                offered,
+                model_draft: model_draft
+                    .as_ref()
+                    .map(|d| (d, guess_kind.as_str(), guess_scope.as_deref())),
                 ranked_with_subject: subject.filter(|_| with_subject),
                 ranked_with_history: with_history,
                 ranked_with_file_history: with_file_history,
@@ -387,8 +522,19 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
             if let Some(scope) = &hint.suggestion {
                 println!("scope: {scope}");
             }
-            if let Some(d) = &drafted {
-                println!("subject: {}", d.subject);
+            if let Some((subject, _)) = offered {
+                println!("subject: {subject}");
+            }
+            if let Some(d) = &model_draft {
+                let below = if d.is_confident() {
+                    ""
+                } else {
+                    ", too unsure to offer"
+                };
+                println!(
+                    "model draft: {} (confidence {:.2}{below})",
+                    d.subject, d.confidence
+                );
             }
         }
         return Ok(ExitCode::SUCCESS);
@@ -425,7 +571,6 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
         eprint!("{}", summary(&change));
     }
     let theme = theme();
-    let draft_subject = drafted.as_ref().map(|d| d.subject.as_str());
 
     // Subject first: ask for it, then rank the types with it.
     let mut typed_subject = None;
@@ -441,10 +586,18 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
             .as_deref()
             .map(str::trim)
             .filter(|s| !s.is_empty());
+        let model_draft = background
+            .take()
+            .and_then(|b| b.finish(&guess_kind, guess_scope.as_deref()));
+        if INTERRUPTED.load(Ordering::SeqCst) {
+            return Ok(interrupted());
+        }
+        let offered =
+            offered_draft(model_draft.as_ref(), drafted.as_ref()).map(|(s, _)| s.to_string());
         let subject = prompt_subject(
             &*theme,
             "Subject",
-            draft_subject,
+            offered.as_deref(),
             None,
             rules.header_max(),
             |s| message::header(shortest, scope_given, cli.breaking, s),
@@ -517,14 +670,24 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
                         header_for,
                     )?
                 }
-                None => prompt_subject(
-                    &*theme,
-                    prompt_label(&prefix),
-                    draft_subject,
-                    None,
-                    rules.header_max(),
-                    header_for,
-                )?,
+                None => {
+                    let model_draft = background
+                        .take()
+                        .and_then(|b| b.finish(&kind, scope.as_deref()));
+                    if INTERRUPTED.load(Ordering::SeqCst) {
+                        return Ok(interrupted());
+                    }
+                    let offered = offered_draft(model_draft.as_ref(), drafted.as_ref())
+                        .map(|(s, _)| s.to_string());
+                    prompt_subject(
+                        &*theme,
+                        prompt_label(&prefix),
+                        offered.as_deref(),
+                        None,
+                        rules.header_max(),
+                        header_for,
+                    )?
+                }
             };
             (subject, Vec::new())
         }
@@ -677,6 +840,30 @@ fn unmatched_path(e: anyhow::Error, paths: &[String]) -> anyhow::Error {
             "no file matches {p:?}; gca's commands are config, completions and hook (see gca --help)"
         ),
         None => e,
+    }
+}
+
+/// The subject model file, if one is set and this build can run it.
+fn draft_model_path(cli: &Cli) -> Option<PathBuf> {
+    #[cfg(feature = "t5")]
+    let flag = cli.draft_model.as_deref();
+    #[cfg(not(feature = "t5"))]
+    let flag = {
+        let _ = cli;
+        None
+    };
+    t5draft::model_path(flag)
+}
+
+/// The subject draft to offer, and who wrote it: the model's when it is
+/// sure enough of it, else the rules' for mechanical changes.
+fn offered_draft<'a>(
+    model: Option<&'a t5draft::ModelDraft>,
+    rules: Option<&'a Draft>,
+) -> Option<(&'a str, &'static str)> {
+    match model.filter(|d| d.is_confident()) {
+        Some(d) => Some((d.subject.as_str(), "model")),
+        None => rules.map(|d| (d.subject.as_str(), "rules")),
     }
 }
 
@@ -987,7 +1174,10 @@ fn summary(change: &Change) -> String {
 /// What the dry run's JSON reports besides the change and the ranking.
 struct JsonExtras<'a> {
     hint: &'a ScopeHint,
-    drafted: Option<&'a Draft>,
+    /// The subject draft gca offers, and who wrote it ("model" or "rules").
+    offered: Option<(&'a str, &'static str)>,
+    /// What the model wrote, for which type and scope, offered or not.
+    model_draft: Option<(&'a t5draft::ModelDraft, &'a str, Option<&'a str>)>,
     ranked_with_subject: Option<&'a str>,
     ranked_with_history: usize,
     ranked_with_file_history: usize,
@@ -1003,7 +1193,8 @@ fn print_json(
 ) -> Result<()> {
     let JsonExtras {
         hint,
-        drafted,
+        offered,
+        model_draft,
         ranked_with_subject,
         ranked_with_history,
         ranked_with_file_history,
@@ -1033,7 +1224,15 @@ fn print_json(
         "preselected": ranked[preselect].0,
         "scope": hint.suggestion,
         "repo_uses_scopes": hint.repo_uses_scopes,
-        "subject_draft": drafted.map(|d| d.subject.as_str()),
+        "subject_draft": offered.map(|(s, _)| s),
+        "subject_draft_source": offered.map(|(_, who)| who),
+        "model_draft": model_draft.map(|(d, kind, scope)| serde_json::json!({
+            "subject": d.subject,
+            "confidence": d.confidence,
+            "offered": d.is_confident(),
+            "type": kind,
+            "scope": scope,
+        })),
         "ranked_with_subject": ranked_with_subject,
         "ranked_with_history": ranked_with_history,
         "ranked_with_file_history": ranked_with_file_history,
@@ -1133,6 +1332,10 @@ fn prompt_order() -> Result<Order> {
 }
 
 fn config(what: &ConfigCmd) -> Result<ExitCode> {
+    #[cfg(feature = "t5")]
+    if let ConfigCmd::DraftModel { path, local } = what {
+        return config_draft_model(path.as_deref(), *local);
+    }
     let (key, value, local, unset) = match what {
         ConfigCmd::Push { mode, local } => (PUSH_KEY, mode, *local, "never (default)"),
         ConfigCmd::Remote { name, local } => (
@@ -1142,6 +1345,8 @@ fn config(what: &ConfigCmd) -> Result<ExitCode> {
             "(not set: the upstream, then origin)",
         ),
         ConfigCmd::Order { order, local } => (ORDER_KEY, order, *local, "type-first (default)"),
+        #[cfg(feature = "t5")]
+        ConfigCmd::DraftModel { .. } => unreachable!("handled above"),
     };
     match value {
         None => {
@@ -1161,6 +1366,41 @@ fn config(what: &ConfigCmd) -> Result<ExitCode> {
             println!("{key} = {v}  ({place})");
         }
     }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// `gca config draft-model [PATH]`: the path is stored absolute, so it
+/// works from any directory; "" removes the setting.
+#[cfg(feature = "t5")]
+fn config_draft_model(path: Option<&str>, local: bool) -> Result<ExitCode> {
+    let key = t5draft::MODEL_KEY;
+    let Some(path) = path else {
+        match git::get_config_path(key) {
+            Some(p) => println!("{key} = {p}"),
+            None => println!("{key} = (not set: no model drafts)"),
+        }
+        return Ok(ExitCode::SUCCESS);
+    };
+    if local {
+        git::ensure_work_tree()?;
+    }
+    if path.trim().is_empty() {
+        git::unset_config(key, local)?;
+        println!("{key} removed; subjects are drafted by the rules only");
+        return Ok(ExitCode::SUCCESS);
+    }
+    let file = std::path::absolute(path).with_context(|| format!("not a usable path: {path}"))?;
+    if !file.is_file() {
+        bail!("no file at {}", file.display());
+    }
+    let shown = file.display().to_string();
+    git::set_config(key, &shown, local)?;
+    let place = if local {
+        "this repository"
+    } else {
+        "global config"
+    };
+    println!("{key} = {shown}  ({place})");
     Ok(ExitCode::SUCCESS)
 }
 

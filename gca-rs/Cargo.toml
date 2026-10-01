@@ -22,6 +22,10 @@ required-features = ["installer"]
 
 [features]
 installer = ["dep:winreg"]
+# Subject drafts written by a small neural model (src/t5draft/), from a model
+# file downloaded separately:
+#   cargo build --release --features t5
+t5 = ["dep:candle-core", "dep:candle-nn", "dep:tokenizers"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -34,6 +38,11 @@ console = "0.15"
 ctrlc = "3"
 # completion: Tab fills in the subject draft
 dialoguer = { version = "0.11", features = ["completion"] }
+# The t5 feature. candle is pinned: src/t5draft/runtime.rs relies on its
+# quantized tensor formats.
+candle-core = { version = "=0.11.0", optional = true }
+candle-nn = { version = "=0.11.0", optional = true }
+tokenizers = { version = "0.22", optional = true, default-features = false, features = ["fancy-regex"] }
 
 [target.'cfg(windows)'.dependencies]
 winreg = { version = "0.55", optional = true }

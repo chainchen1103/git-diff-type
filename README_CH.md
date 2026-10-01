@@ -200,6 +200,27 @@ hook 絕不會擋下 commit。`GCA_HOOK=0 git commit ...` 可以略過一次，`
 作者有 96.6% 選了 `chore`。草稿寫的是改了什麼，作者常寫的卻是為什麼改，只有 6.8% 的摘要與草稿一字不差，
 所以草稿只是預設值，直接打字就能換掉。
 
+### 模型寫的草稿（實驗性）
+
+gca 也能用一個小型神經網路模型替任何變更起草摘要：在同一批 commit 上微調的 CodeT5-small
+（[draft_model/](draft_model/README.md)）。它離線在 CPU 上執行，需要以 `t5` feature 建置，
+並另外下載 67 MB 的模型檔（還沒有隨版本發佈，`draft_model/README.md` 說明了怎麼做出來）：
+
+```
+cargo install --path gca-rs --features t5
+gca config draft-model path/to/gca-draft-q8.gguf
+```
+
+模型讀的是你選的類型與 scope、檔案、幾個先前 commit 的標頭和變更的行。它在類型選單開著時於背景起草，
+用的是 gca 建議的類型與 scope；你選了別的就重寫一次。模型夠有把握時（各 token 的平均對數機率在 -0.3 以上）
+才會提供它的草稿，否則照舊由上面的規則起草。在 gca 沒看過的專案的近期 commit 上，14.5% 的 commit 會拿到模型草稿，
+其中 34.3% 與作者寫的摘要完全相同，56.0% 至少省下一半的打字。
+
+`--dry-run` 會印出模型的草稿和信心（不論有沒有提供）；`--dry-run --json` 放在 `model_draft`，
+`subject_draft_source` 則說明 `subject_draft` 是模型還是規則寫的。`--draft-model <FILE>` 或
+`GCA_DRAFT_MODEL` 可只對這次指定模型檔，`GCA_DRAFT_MODEL` 設為空字串則關閉模型。每次起草約花半秒 CPU 和
+250 MB 記憶體。commit hook 不使用模型。
+
 ## 準確率
 
 模型以 **437,945 個 commit** 訓練，來自 5,925 個儲存庫：其中 342,347 個是 36 個遵循 Conventional Commits 的開源專案裡由人寫、2026-04-20 以前的 commit（不含 bot），另外 95,598 個來自公開資料集 CommitChronicle 與 CommitBench，並已排除所有測試專案所屬組織的資料。測試資料取自公開儲存庫，分成三組：
@@ -398,8 +419,7 @@ CI 在每次 push 時執行這些檢查（Rust 部分在 Windows、macOS、Linux
 
 ## Roadmap
 
-- 其他 commit 也離線草擬摘要：由內建小模型接在已選的類型與 scope 後面補完
-  （機械性的 commit 已經有[草稿](#摘要草稿)）
+- 正式推出[摘要模型](#模型寫的草稿實驗性)：模型檔隨版本發佈、用測試以外的專案訂出門檻，並在你打字時接著補完摘要
 - 改善 `refactor` / `perf`。0.5 加入的「行為是否改變」跡象有一點幫助，它們更常出現在三個選項中，
   但只看 diff 時仍幾乎不會排第一；找出它們的還是摘要
 - 發現暫存內容混雜了不相關的變更時，建議拆成幾個 commit。只靠目錄、檔名和過去一起 commit 的紀錄來分組不夠：

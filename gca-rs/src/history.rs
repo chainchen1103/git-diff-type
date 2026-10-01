@@ -15,6 +15,7 @@ use crate::message;
 /// How many recent commits to learn from.
 pub const DEPTH: usize = 500;
 
+#[derive(Clone)]
 pub struct LogEntry {
     pub sha: String,
     /// `Name <email>`
@@ -236,7 +237,9 @@ pub fn own_commits<'a>(
         .collect()
 }
 
-fn same_person(a: &str, b: &str) -> bool {
+/// Whether two `Name <email>` idents are one person: the same email, or
+/// failing that the same name.
+pub(crate) fn same_person(a: &str, b: &str) -> bool {
     let split = |ident: &str| -> (String, String) {
         match ident.rsplit_once('<') {
             Some((name, email)) => (
