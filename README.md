@@ -68,7 +68,7 @@ against the release's `SHA256SUMS`, puts it in `~/.local/bin` (Windows:
 `%LOCALAPPDATA%\gca`) and adds that folder to your PATH. Nothing else on your
 machine changes. Run it again to upgrade. To remove gca, run
 `curl -fsSL .../install.sh | sh -s -- --uninstall`, or in PowerShell set
-`$env:GCA_UNINSTALL = 1` before the same command. `GCA_VERSION=v0.4.0`
+`$env:GCA_UNINSTALL = 1` before the same command. `GCA_VERSION=v0.5.0`
 installs a given release, `GCA_INSTALL_DIR` another folder, and
 `GCA_NO_MODIFY_PATH=1` leaves your PATH alone.
 

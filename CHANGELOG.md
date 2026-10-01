@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 (2026-10-01)
 
 The diff model also reads whether a change alters behavior. Every other
 setting is as in 0.4, and the first suggestion, the top three and the
