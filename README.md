@@ -271,8 +271,9 @@ subject exactly and 56.0% save at least half the typing.
 `--dry-run --json` has it as `model_draft`, and `subject_draft_source` says
 whether the model or the rules wrote `subject_draft`. `--draft-model <FILE>`
 or `GCA_DRAFT_MODEL` name the file for one run, and an empty
-`GCA_DRAFT_MODEL` turns the model off. A draft takes about half a second of
-CPU and 250 MB of memory. The commit hook does not use the model.
+`GCA_DRAFT_MODEL` turns the model off. A draft takes about 0.2 s on a recent
+laptop and 0.5 s on two cloud cores, and 250 MB of memory. The commit hook
+does not use the model.
 
 ## Accuracy
 

@@ -218,8 +218,8 @@ gca config draft-model path/to/gca-draft-q8.gguf
 
 `--dry-run` 會印出模型的草稿和信心（不論有沒有提供）；`--dry-run --json` 放在 `model_draft`，
 `subject_draft_source` 則說明 `subject_draft` 是模型還是規則寫的。`--draft-model <FILE>` 或
-`GCA_DRAFT_MODEL` 可只對這次指定模型檔，`GCA_DRAFT_MODEL` 設為空字串則關閉模型。每次起草約花半秒 CPU 和
-250 MB 記憶體。commit hook 不使用模型。
+`GCA_DRAFT_MODEL` 可只對這次指定模型檔，`GCA_DRAFT_MODEL` 設為空字串則關閉模型。每次起草在近年的筆電上約 0.2 秒、
+雲端兩核約 0.5 秒，用掉約 250 MB 記憶體。commit hook 不使用模型。
 
 ## 準確率
 

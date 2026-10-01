@@ -122,12 +122,14 @@ cargo run --release --features t5 -- draft-model convert ../draft_model/runs/ckp
   0.0002). With the 8-bit file, on 1,000 test commits, it scores as the GPU
   run did: exact 6.1% both, saving half the typing 16.5% against 16.6%, and
   the same 14.7% of drafts offered at -0.3.
-- A draft takes 0.47 s (median, a full 512-token input, about 8 tokens
-  written) on two cores of a 2.1 GHz cloud Xeon, plus 0.3 s to load the
-  model; 0.69 s in a two-core virtual machine on a Ryzen AI 9 HX 370 laptop.
-  A dry run with the model peaks at 276 MB of memory. gca drafts in the
-  background while the type prompt is open, for the type and scope it
-  suggests, and drafts again if you pick others.
+- A draft takes 0.19 s (median of 60 test commits, most with a full
+  512-token input, about 8 tokens written) on a Ryzen AI 9 HX 370 laptop
+  under Windows, with the same subjects and confidences as on Linux; 0.47 s
+  on two cores of a 2.1 GHz cloud Xeon, plus 0.3 s there to load the model,
+  and 0.69 s in a two-core virtual machine on the laptop. A dry run with the
+  model peaks at 276 MB of memory. gca drafts in the background while the
+  type prompt is open, for the type and scope it suggests, and drafts again
+  if you pick others.
 
 ## Files
 
