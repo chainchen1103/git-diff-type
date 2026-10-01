@@ -84,22 +84,51 @@ The history lines help most where a project repeats itself:
 ### Confidence
 
 The model's confidence in a draft is the mean log-probability of its tokens
-and of the end token. The drafts it is sure of are much better
-(`confidence.py`):
+and of the end token. The drafts it is sure of are much better, except one
+kind: when a change touches the same files as the commit before, the model
+sometimes copies that commit's subject. Of the 1,454 drafts with a
+confidence of -0.3 or more, 155 repeat the subject of exactly one of the
+500 earlier commits, and only 2.6% of those are exact (23.2% save half the
+typing); the 160 that repeat a subject several earlier commits share, such
+as `bump version`, are exact 80.0% of the time. gca holds back the first
+kind (`confidence.py`):
 
 | Confidence | Commits with a draft | Exact | Within one word | Saves half or more |
 | --- | ---: | ---: | ---: | ---: |
-| -0.2 or more | 9.7% | 47.9% | 56.1% | 67.2% |
-| **-0.3 or more** | **14.5%** | **34.3%** | **42.8%** | **56.0%** |
-| -0.5 or more | 26.1% | 20.2% | 27.4% | 41.3% |
-| any | 100% | 5.5% | 8.1% | 15.9% |
+| -0.2 or more | 8.9% | 52.1% | 60.1% | 71.0% |
+| **-0.3 or more** | **13.0%** | **38.0%** | **46.7%** | **59.9%** |
+| -0.5 or more | 23.1% | 22.5% | 29.7% | 43.6% |
+| any | 96.1% | 5.6% | 8.1% | 15.7% |
+
+By confidence alone, -0.3 would give 14.5% of the commits a draft, 34.3% of
+them exact and 56.0% saving half the typing.
 
 gca offers the model's draft from -0.3 up. This threshold was read off the
-same test commits, and projects differ: at -0.3, 6% to 50% of a project's
-commits get a draft, and 20% to 78% of those drafts save half the typing or
-more. Of the offered drafts that save half the typing, 40% are medusa's
-(whose diffs often hold the subject), 16% are `bump version`, `publish` or
-a history header repeated, 18% edit a history header, and 26% are new.
+same test commits, and projects differ: at -0.3, 4% to 49% of a project's
+commits get a draft, and 21% to 78% of those drafts save half the typing or
+more. Of the offered drafts that save half the typing, 41% are medusa's
+(whose diffs often hold the subject), 17% are `bump version`, `publish` or
+a history header repeated, 17% edit a history header, and 25% are new.
+
+### On real repositories
+
+`replay.py` shows what gca offers as a person committing would see it: each
+commit is staged on top of its parent, under its author's name, and
+`gca --dry-run --json` is asked with the author's type and scope.
+
+| Repository | Commits by people | Model drafts offered | Exact | Saves half or more |
+| --- | ---: | ---: | ---: | ---: |
+| gca itself, its newest | 60 | 2 | 2 | 2 |
+| shadcn-ui/ui, since 2026-04-20 | 150 | 78 | 14 | 46 |
+| commitlint, since 2026-04-20 | 29 | 3 | 0 | 1 |
+
+On gca's own commits the two drafts are its releases (`release 0.5.0`,
+`release 0.4.0`); without holding back repeats it would also have offered
+the subjects of the commits before `feat(model): retrain with the behavior
+features` and `feat(cli): add a prepare-commit-msg hook`. Its other drafts,
+not offered, mostly say what changed (`update README`) where the author
+wrote why. In shadcn-ui most drafts fill in its template, `add @name to the
+registry directory`.
 
 ## In gca
 
@@ -142,5 +171,6 @@ cargo run --release --features t5 -- draft-model convert ../draft_model/runs/ckp
 | `train_t5.py` | fine-tunes the model; `--resume` continues |
 | `generate_t5.py` | writes `predictions.jsonl`: greedy subjects with their confidence, three by beam search, and completions |
 | `score.py`, `confidence.py` | the tables above |
+| `replay.py` | replays a repository's commits through gca (`python draft_model/replay.py GCA REPO MODEL N OUT.jsonl`); it adds and removes a temporary git worktree |
 | `baseline_files.py` | the file-overlap baseline |
 | `gen_fixtures.py` | the Rust port's test cases, `gca-rs/tests/t5_input_fixtures.json` |

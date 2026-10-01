@@ -287,6 +287,7 @@ impl Drafter {
             draft: ModelDraft {
                 subject: super::input::py_strip(&text).to_string(),
                 confidence: (log_prob / count.max(1) as f64) as f32,
+                repeats: 0,
             },
             steps: count,
         })

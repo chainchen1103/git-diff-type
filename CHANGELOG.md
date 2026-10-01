@@ -12,10 +12,11 @@ Builds with the `t5` feature can draft subjects with a small model.
   `GCA_DRAFT_MODEL`. CodeT5-small, fine-tuned on the training commits, reads
   the chosen type and scope, the files, the headers of a few earlier commits
   and the changed lines; gca runs it on the CPU with candle while the type
-  prompt is open and offers its draft when the model is sure enough of it,
-  else the rules' draft as before. On recent commits of projects gca never
-  saw, 14.5% of the commits get a model draft; 34.3% of those are the
-  author's subject exactly and 56.0% save at least half the typing.
+  prompt is open and offers its draft when the model is sure enough of it
+  and the draft is not just the subject of one earlier commit, else the
+  rules' draft as before. On recent commits of projects gca never saw,
+  13.0% of the commits get a model draft; 38.0% of those are the author's
+  subject exactly and 59.9% save at least half the typing.
   `--dry-run` shows the model's draft and confidence, and `--dry-run --json`
   adds `model_draft` and `subject_draft_source`. The model file (67 MB) is
   not released yet.

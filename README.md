@@ -262,10 +262,12 @@ The model reads the type and scope you chose, the files, the headers of a few
 earlier commits and the changed lines. It drafts in the background while the
 type prompt is open, for the type and scope gca suggests, and again if you
 pick others. Its draft is offered only when the model is sure enough of it
-(the mean log-probability of its tokens is -0.3 or more); otherwise the
-rules above draft as before. On the recent commits of projects gca never
-saw, 14.5% of the commits get a model draft; 34.3% of those are the author's
-subject exactly and 56.0% save at least half the typing.
+(the mean log-probability of its tokens is -0.3 or more) and the draft is
+not just the subject of one earlier commit, which the model sometimes
+copies; otherwise the rules above draft as before. On the recent commits of
+projects gca never saw, 13.0% of the commits get a model draft; 38.0% of
+those are the author's subject exactly and 59.9% save at least half the
+typing.
 
 `--dry-run` prints the model's draft and its confidence, offered or not;
 `--dry-run --json` has it as `model_draft`, and `subject_draft_source` says

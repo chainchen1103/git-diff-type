@@ -205,6 +205,31 @@ pub fn history(log: &[LogEntry], staged: &[String], kind: &str, me: Option<&str>
         .collect()
 }
 
+/// How many of the typed commits in the recent log have this subject,
+/// compared as the evaluation compares subjects: case, spacing and a final
+/// period aside.
+#[cfg_attr(not(feature = "t5"), allow(dead_code))]
+pub fn repeats(log: &[LogEntry], subject: &str) -> usize {
+    let wanted = loose(subject);
+    log.iter()
+        .filter(|e| LABEL.is_match(&e.subject))
+        .filter(|e| loose(&subject::normalize(&e.subject)) == wanted)
+        .count()
+}
+
+#[cfg_attr(not(feature = "t5"), allow(dead_code))]
+fn loose(s: &str) -> String {
+    let s = s
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    match s.strip_suffix('.') {
+        Some(t) => t.to_string(),
+        None => s,
+    }
+}
+
 /// The first `n` characters of `s`.
 fn take_chars(s: &str, n: usize) -> &str {
     match s.char_indices().nth(n) {
@@ -266,6 +291,19 @@ mod tests {
         );
         assert!(got.chars().count() <= MAX_CHARS);
         assert!(got.ends_with(char::is_numeric));
+    }
+
+    #[test]
+    fn counts_the_commits_that_had_a_subject() {
+        let log = [
+            entry("Bo <bo@x>", "chore: bump version", &[]),
+            entry("Bo <bo@x>", "chore(release): Bump  version.", &[]),
+            entry("Bo <bo@x>", "bump version", &[]), // no type: not counted
+            entry("Bo <bo@x>", "fix: handle empty input (#12)", &[]),
+        ];
+        assert_eq!(repeats(&log, "bump version"), 2);
+        assert_eq!(repeats(&log, "Handle empty input"), 1);
+        assert_eq!(repeats(&log, "something new"), 0);
     }
 
     #[test]

@@ -5,7 +5,8 @@
 //! The model reads the chosen type and scope, the files, the headers of a
 //! few earlier commits and the changed lines ([`input`]), and writes the
 //! subject. Its draft is offered only when it is sure enough of it
-//! ([`THRESHOLD`]); otherwise gca falls back to the rules.
+//! ([`THRESHOLD`]) and does not merely repeat one earlier commit's subject
+//! ([`ModelDraft::is_offered`]); otherwise gca falls back to the rules.
 //!
 //! The model runs only in builds with the `t5` feature, from a file the
 //! user downloads and names ([`model_path`]). It loads and drafts in the
@@ -25,22 +26,38 @@ pub const MODEL_KEY: &str = "gca.draftModel";
 pub const MODEL_ENV: &str = "GCA_DRAFT_MODEL";
 
 /// The lowest mean log-probability per token at which a draft is offered.
-/// On 10,005 commits from projects held out from training, 14.5% of drafts
-/// reached it; of those, 34% were the author's subject exactly and 56%
-/// saved at least half the typing (draft_model/README.md).
+/// On 10,005 commits from projects held out from training, 13.0% of the
+/// commits got a draft; 38.0% of those drafts were the author's subject
+/// exactly and 59.9% saved at least half the typing (draft_model/README.md).
 pub const THRESHOLD: f32 = -0.3;
 
-/// A subject the model wrote, and how sure it was: the mean log-probability
-/// of its tokens, 0 for certain.
+/// A subject the model wrote, how sure it was (the mean log-probability of
+/// its tokens, 0 for certain), and how many recent commits had it already.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelDraft {
     pub subject: String,
     pub confidence: f32,
+    pub repeats: usize,
 }
 
 impl ModelDraft {
-    pub fn is_confident(&self) -> bool {
-        self.confidence >= THRESHOLD && !self.subject.trim().is_empty()
+    /// Why gca does not offer this draft, if it does not: the model is not
+    /// sure enough of it, or it repeats the subject of a single recent
+    /// commit. The model sometimes copies the commit before, which is
+    /// almost never right (2.6% of such sure drafts were exact), unlike a
+    /// subject several commits share, such as `bump version` (80%).
+    pub fn why_not_offered(&self) -> Option<&'static str> {
+        if self.confidence < THRESHOLD || self.subject.trim().is_empty() {
+            Some("too unsure to offer")
+        } else if self.repeats == 1 {
+            Some("not offered: an earlier commit's subject")
+        } else {
+            None
+        }
+    }
+
+    pub fn is_offered(&self) -> bool {
+        self.why_not_offered().is_none()
     }
 }
 
@@ -118,11 +135,14 @@ impl Background {
                 .map_err(|_| anyhow::anyhow!("it stopped unexpectedly"))
                 .and_then(|r| r)
                 .and_then(|(drafter, change, draft)| {
-                    if (kind, scope) == (self.guess.0.as_str(), self.guess.1.as_deref()) {
-                        Ok(draft)
-                    } else {
-                        drafter.draft(&change.input(kind, scope))
-                    }
+                    let mut draft =
+                        if (kind, scope) == (self.guess.0.as_str(), self.guess.1.as_deref()) {
+                            draft
+                        } else {
+                            drafter.draft(&change.input(kind, scope))?
+                        };
+                    draft.repeats = input::repeats(&change.log, &draft.subject);
+                    Ok(draft)
                 });
             match result {
                 Ok(draft) => Some(draft),
@@ -141,5 +161,32 @@ impl Background {
             let _ = (kind, scope);
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn offers_sure_drafts_that_do_not_copy_one_earlier_subject() {
+        let draft = |confidence, repeats| ModelDraft {
+            subject: "bump version".into(),
+            confidence,
+            repeats,
+        };
+        assert!(draft(-0.1, 0).is_offered());
+        assert!(
+            draft(-0.1, 3).is_offered(),
+            "a subject several commits share"
+        );
+        assert_eq!(
+            draft(-0.1, 1).why_not_offered(),
+            Some("not offered: an earlier commit's subject")
+        );
+        assert_eq!(
+            draft(-0.5, 0).why_not_offered(),
+            Some("too unsure to offer")
+        );
     }
 }

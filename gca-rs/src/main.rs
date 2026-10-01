@@ -526,14 +526,12 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
                 println!("subject: {subject}");
             }
             if let Some(d) = &model_draft {
-                let below = if d.is_confident() {
-                    ""
-                } else {
-                    ", too unsure to offer"
-                };
+                let why = d.why_not_offered().map(|w| format!(", {w}"));
                 println!(
-                    "model draft: {} (confidence {:.2}{below})",
-                    d.subject, d.confidence
+                    "model draft: {} (confidence {:.2}{})",
+                    d.subject,
+                    d.confidence,
+                    why.unwrap_or_default()
                 );
             }
         }
@@ -861,7 +859,7 @@ fn offered_draft<'a>(
     model: Option<&'a t5draft::ModelDraft>,
     rules: Option<&'a Draft>,
 ) -> Option<(&'a str, &'static str)> {
-    match model.filter(|d| d.is_confident()) {
+    match model.filter(|d| d.is_offered()) {
         Some(d) => Some((d.subject.as_str(), "model")),
         None => rules.map(|d| (d.subject.as_str(), "rules")),
     }
@@ -1229,7 +1227,8 @@ fn print_json(
         "model_draft": model_draft.map(|(d, kind, scope)| serde_json::json!({
             "subject": d.subject,
             "confidence": d.confidence,
-            "offered": d.is_confident(),
+            "offered": d.is_offered(),
+            "repeats": d.repeats,
             "type": kind,
             "scope": scope,
         })),
