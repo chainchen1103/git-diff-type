@@ -44,6 +44,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      # the test scripts serve the release with Python's http.server
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - name: Build gca
         working-directory: gca-rs
         run: cargo build --bin gca

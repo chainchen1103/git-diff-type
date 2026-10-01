@@ -10,7 +10,22 @@ Copy-Item -LiteralPath 'gca-rs\target\debug\gca.exe' -Destination (Join-Path $re
 $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $release $asset)).Hash.ToLowerInvariant()
 Set-Content -Path (Join-Path $release 'SHA256SUMS') -Value "$hash  $asset" -Encoding ascii
 $server = Start-Process python -ArgumentList '-m', 'http.server', $port, '--bind', '127.0.0.1', '--directory', $release -PassThru -WindowStyle Hidden
-Start-Sleep -Seconds 3
+# Python can take more than a few seconds to start on a fresh runner: wait
+# until the server takes connections rather than for a fixed time.
+$deadline = (Get-Date).AddSeconds(60)
+while ($true) {
+    if ($server.HasExited) { throw "the test server stopped (exit code $($server.ExitCode))" }
+    $client = New-Object System.Net.Sockets.TcpClient
+    try {
+        $client.Connect('127.0.0.1', $port)
+        break
+    } catch {
+        if ((Get-Date) -gt $deadline) { throw "the test server did not start on port $port" }
+        Start-Sleep -Milliseconds 250
+    } finally {
+        $client.Close()
+    }
+}
 
 function Get-UserPath {
     (Get-Item 'HKCU:\Environment').GetValue('Path', '', 'DoNotExpandEnvironmentNames')
