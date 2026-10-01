@@ -13,3 +13,12 @@ __pycache__/
 gca-rs/target/
 gca-rs/tests/fixtures.json
 eval/work/
+# the subject model's data, environment, runs and outputs (draft_model/README.md)
+draft_model/data
+draft_model/runs/
+draft_model/.venv/
+draft_model/hf/
+draft_model/*.log
+draft_model/predictions.jsonl
+draft_model/baseline_files.json
+*.gguf
