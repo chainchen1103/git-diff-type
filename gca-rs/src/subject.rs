@@ -130,6 +130,9 @@ impl SubjectModel {
                 (i, tf * p.idf[i])
             })
             .collect();
+        // In index order, as scikit-learn keeps them: sums in the map's
+        // random order could differ in the last bits from run to run.
+        x.sort_unstable_by_key(|&(i, _)| i);
         let norm = x.iter().map(|(_, v)| v * v).sum::<f64>().sqrt();
         if norm > 0.0 {
             for (_, v) in &mut x {
@@ -274,8 +277,8 @@ mod tests {
     #[test]
     fn words_and_pairs_are_weighted_like_scikit_learn() {
         let m = tiny(1.0, 0.0);
-        let mut x = m.features("Speed UP speed");
-        x.sort_by_key(|(i, _)| *i);
+        // in index order, so that sums over them do not vary from run to run
+        let x = m.features("Speed UP speed");
         // tf: speed 2, up 1, "speed up" 1; sublinear tf is 1 + ln(tf)
         let raw = [(1.0 + 2f64.ln()) * 2.0, 1.0, 3.0];
         let norm = raw.iter().map(|v| v * v).sum::<f64>().sqrt();

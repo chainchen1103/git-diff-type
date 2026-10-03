@@ -13,6 +13,12 @@
   touched under its old path too; the suggestions for those commits, and
   for the newest 150 of vite and astro, are the same.
 
+### Fixed
+
+- With a subject, the probabilities `--dry-run --json` prints could differ
+  in their last digits from one run to the next: the subject's words were
+  added up in a random order.
+
 ## 0.5.0 (2026-10-01)
 
 The diff model also reads whether a change alters behavior. Every other
