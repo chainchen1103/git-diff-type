@@ -321,6 +321,11 @@ pub fn status_short() -> Result<String> {
 
 /// Subjects and changed files of the most recent non-merge commits. Empty
 /// before the first commit.
+///
+/// Only files moved unchanged are paired as renames: pairing the edited ones
+/// compares the contents of every added file with every deleted one, which
+/// took 0.37 s of 0.42 s for the last 500 commits of shadcn-ui. A file moved
+/// and edited is listed under both paths.
 pub fn recent_log(depth: usize) -> Vec<LogEntry> {
     let n = depth.to_string();
     let args = [
@@ -336,6 +341,7 @@ pub fn recent_log(depth: usize) -> Vec<LogEntry> {
         &n,
         "--format=%x1e%H%x1f%an <%ae>%x1f%s",
         "--name-only",
+        "--find-renames=100%",
     ];
     run(None, &args)
         .map(|out| parse_log(&out))

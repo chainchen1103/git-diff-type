@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Faster in projects that add and delete many files.** Reading the last
+  500 commits, git compared the contents of every added file with every
+  deleted one to find files that were moved and edited; gca now has it pair
+  only files moved unchanged. Replaying the newest 150 commits of
+  shadcn-ui, a dry run took 0.18 s instead of 0.58 s (median, on two cloud
+  cores). A file moved and edited in an earlier commit now counts as
+  touched under its old path too; the suggestions for those commits, and
+  for the newest 150 of vite and astro, are the same.
+
 ## 0.5.0 (2026-10-01)
 
 The diff model also reads whether a change alters behavior. Every other
