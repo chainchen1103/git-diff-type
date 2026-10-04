@@ -8,7 +8,8 @@ It starts from the encoder of the subject model (--base runs, the newest
 checkpoint there), which has read these inputs before, or from any CodeT5
 checkpoint or name. Reads train-*.jsonl.gz and valid.jsonl.gz from
 type_data/ (prepare_type.py writes them) and writes checkpoints under
-type_runs/: Ctrl+C saves one and stops, --resume continues.
+type_runs/: Ctrl+C saves one and stops, --resume continues. --class-weight
+0.5 counts the rarer types' examples more (README.md, The rarer types).
 
 Usage (PowerShell, in this folder; run_type.bat does it all):
     .venv\\Scripts\\python train_type.py --base runs
@@ -21,6 +22,7 @@ import random
 import shutil
 import sys
 import time
+from collections import Counter
 from pathlib import Path
 
 import torch
@@ -120,6 +122,9 @@ def main():
     ap.add_argument("--save-every", type=int, default=1000)
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--seed", type=int, default=7)
+    ap.add_argument("--class-weight", type=float, default=0.0,
+                    help="count each type's examples by its share of the training data to the minus "
+                         "this power: 0 (the default) counts them alike, 0.5 rarer types more")
     args = ap.parse_args()
 
     out = Path(args.out)
@@ -162,6 +167,14 @@ def main():
     log(out, f"{len(train):,} training examples, {len(valid):,} for validation; {total_steps:,} steps of "
              f"{args.batch}; device {device}{', bf16' if dtype else ''}; model {base}")
 
+    weight = None
+    if args.class_weight:
+        counts = Counter(r["y"] for r in train)
+        share = torch.tensor([counts[t] for t in TYPES], dtype=torch.float) / len(train)
+        w = share.clamp(min=1 / len(train)) ** -args.class_weight
+        weight = (w / (share * w).sum()).to(device)  # the average example still counts once
+        log(out, "type weights: " + ", ".join(f"{t} {v:.2f}" for t, v in zip(TYPES, weight.tolist())))
+
     per_epoch = math.ceil(len(train) / args.batch)
 
     def batches_from(step):
@@ -181,7 +194,9 @@ def main():
             ids, mask = encode_inputs(tok, [r["i"] for r in rows], args.max_input, device)
             with torch.autocast(device.type, dtype=dtype, enabled=dtype is not None):
                 logits = model(ids, mask)
-            loss = nn.functional.cross_entropy(logits, labels(rows, device))
+            if weight is not None:
+                logits = logits.float()  # bfloat16 under autocast; the weights are 32-bit
+            loss = nn.functional.cross_entropy(logits, labels(rows, device), weight=weight)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
