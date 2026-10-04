@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.6.1 (2026-10-04)
+
+Releases that also name the new version in a README, an install script or
+a version constant get a `release` draft too, with or without the models.
 
 ### Changed
 
