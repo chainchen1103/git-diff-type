@@ -580,7 +580,10 @@ builds the installer on Windows.
   you type
 - Better `refactor` / `perf`. Signs of whether behavior changed (0.5) help
   a little, more often putting them among the three, but the diff alone
-  still almost never puts them first; the subject is what finds them
+  still almost never puts them first; the subject is what finds them. The
+  type model finds more `perf` when trained to count the rarer types more,
+  but then gets fewer first suggestions right
+  ([The rarer types](draft_model/README.md#the-rarer-types))
 - Notice staged changes that mix unrelated work and suggest splitting them.
   Grouping the files by directory, by name and by what was committed
   together is not enough: on the unseen projects it would flag 12.4% of real

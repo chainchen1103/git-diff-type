@@ -240,6 +240,38 @@ headers of related earlier commits too, the built-in model only the diff.
   shadcn-ui's newest 150 instead of 100, for 107 of vite's instead of 98,
   and for 116 of astro's instead of 109.
 
+### The rarer types
+
+The type model rarely puts `perf`, `style` or `revert` first. Two ways of
+making it do so more often both cost first suggestions, so the published
+model stays the one above (figures with history and own commits, then with
+the subject as well):
+
+- **Offsets on the output layer's bias**, one per type, chosen on the older
+  commits of half of the unseen projects (a type's offset moves while the
+  average F1 per type rises and the first suggestion stays at least as
+  often right in both rankings) and scored on the other half, both ways
+  round. On the older commits `perf`'s recall rises from 13% to 33%,
+  `style`'s from 6% to 18% and `revert`'s from 0% to 5%, and the average
+  recall per type from 47.6% to 50.7%; but the first suggestion is right
+  66.5% of the time instead of 67.1% (69.9% instead of 70.2%), and on the
+  recent commits 69.9% instead of 70.4% (73.2% instead of 73.7%).
+- **Training again with the rarer types counting more**
+  (`train_type.py --class-weight 0.5`: each type's examples weigh its share
+  of the training data to the power -0.5, from 0.63 for `fix` to 2.5 for
+  `perf` and `style` and 6.1 for `revert`; otherwise as above). On the
+  recent commits `perf`'s recall rises from 24% to 34% (27% to 40%) and the
+  average recall per type from 62.0% to 64.7% (63.5% to 66.5%), on the
+  older ones `perf`'s from 13% to 23% (18% to 27%) and the average from
+  47.6% to 50.5% (50.1% to 53.0%); but `fix`, the most common type, is
+  recalled less often (71% instead of 77% on the older commits), and the
+  first suggestion is right 70.3% of the time instead of 70.4% (73.5%
+  instead of 73.7%) on the recent commits and 66.3% instead of 67.1%
+  (69.8% instead of 70.2%) on the older ones. Taking back the shift the
+  weights give the logits (subtracting the logarithm of each type's
+  weight) brings the first suggestion back, to 70.7% (73.5%) and 67.0%
+  (70.1%), and the rarer types back to where they were.
+
 ### In gca
 
 `gca type-model convert` writes a checkpoint as one GGUF file with the
@@ -331,6 +363,6 @@ read raises its `schema`; they then ask for a newer gca.
 | `gen_fixtures.py` | the Rust port's test cases, `gca-rs/tests/t5_input_fixtures.json` and `t5_type_fixtures.json` |
 | `prepare_type.py` | builds `type_data/` for the type model from `datasets/` |
 | `run_type.bat` | trains the type model and writes its predictions (Windows, NVIDIA GPU) |
-| `train_type.py`, `predict_type.py` | fine-tunes the type model (`--resume` continues), writes `type_predictions/` |
+| `train_type.py`, `predict_type.py` | fine-tunes the type model (`--resume` continues; `--class-weight` counts the rarer types more), writes `type_predictions/` |
 | `eval_type.py` | the type model's tables above |
 | `replay_type.py` | replays a repository's commits through gca with and without the type model (`python draft_model/replay_type.py GCA TYPE_MODEL REPO N`) |
