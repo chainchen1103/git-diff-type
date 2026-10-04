@@ -21,11 +21,13 @@ path = "src/bin/installer.rs"
 required-features = ["installer"]
 
 [features]
+default = ["t5"]
 installer = ["dep:winreg"]
-# Subject drafts written by a small neural model (src/t5draft/), from a model
-# file downloaded separately:
-#   cargo build --release --features t5
-t5 = ["dep:candle-core", "dep:candle-nn", "dep:tokenizers"]
+# The models gca can use besides its built-in one (src/t5draft/): subject
+# drafts and a second ranking of the types, from model files downloaded
+# separately (`gca model install`). Without it (--no-default-features), gca
+# is about 4 MB smaller and uses its built-in model alone.
+t5 = ["dep:candle-core", "dep:candle-nn", "dep:tokenizers", "dep:sha2"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -43,6 +45,8 @@ dialoguer = { version = "0.11", features = ["completion"] }
 candle-core = { version = "=0.11.0", optional = true }
 candle-nn = { version = "=0.11.0", optional = true }
 tokenizers = { version = "0.22", optional = true, default-features = false, features = ["fancy-regex"] }
+# checks downloaded model files
+sha2 = { version = "0.10", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 winreg = { version = "0.55", optional = true }

@@ -2,39 +2,57 @@
 
 ## Unreleased
 
-Builds with the `t5` feature can draft subjects with a small model.
+gca can use two small neural models besides its built-in one: one drafts
+the subject of any change, the other ranks the types with the built-in
+model. They are downloaded apart from gca, with `gca model install`, and a
+newer model needs no newer gca. Without them gca suggests what 0.5.1 did.
 
 ### Added (experimental)
 
-- **Subject drafts from a model** for any change, in builds with the `t5`
-  feature (`cargo install --path gca-rs --features t5`) and with a model
-  file set by `gca config draft-model <FILE>`, `--draft-model` or
-  `GCA_DRAFT_MODEL`. CodeT5-small, fine-tuned on the training commits, reads
-  the chosen type and scope, the files, the headers of a few earlier commits
-  and the changed lines; gca runs it on the CPU with candle while the type
-  prompt is open and offers its draft when the model is sure enough of it
-  and the draft is not just the subject of one earlier commit, else the
-  rules' draft as before. On recent commits of projects gca never saw,
-  13.0% of the commits get a model draft; 38.0% of those are the author's
-  subject exactly and 59.9% save at least half the typing.
+- **`gca model`** installs the models and keeps them up to date:
+  `gca model install` downloads the newest ones this gca can use (67 MB and
+  40 MB) with curl, checks their checksums and sets them in your global git
+  config; `gca model list` shows the models set and the newest published;
+  `gca model update` moves to newer ones, and downloads a deleted file
+  again; `gca model remove` stops using them and deletes the files. The
+  list of models, `models.json`, is read from this repository and the
+  files from its releases. A model made for another input layout than this
+  gca's is skipped, so an older gca keeps the newest model it can read.
+- **Subject drafts from a model** for any change. CodeT5-small, fine-tuned
+  on the training commits, reads the chosen type and scope, the files, the
+  headers of a few earlier commits and the changed lines; gca runs it on
+  the CPU while the type prompt is open and offers its draft when the model
+  is sure enough of it and the draft is not just the subject of one earlier
+  commit, else the rules' draft as before. On recent commits of projects
+  gca never saw, 13.0% of the commits get a model draft; 38.0% of those are
+  the author's subject exactly and 59.9% save at least half the typing.
   `--dry-run` shows the model's draft and confidence, and `--dry-run --json`
-  adds `model_draft` and `subject_draft_source`. The model file (67 MB) is
-  not released yet.
-- `draft_model/` prepares the data, trains the model on an NVIDIA GPU,
-  scores it and documents the results; `gca draft-model convert` (in `t5`
-  builds) writes a checkpoint as the file gca loads.
-- **Ranking the types with a model**, in the same builds, with a file set by
-  `gca config type-model <FILE>`, `--type-model` or `GCA_TYPE_MODEL`: the
-  subject model's encoder fine-tuned to tell the type from the files, the
-  headers of up to four related earlier commits and the changed lines. Its
-  probabilities and the built-in model's are averaged before the subject
-  and the history tilt them. On recent commits of projects gca never saw,
-  with the history and your own commits, the first suggestion is right
-  70.4% of the time instead of 63.8% (73.7% instead of 70.8% with the
-  subject), and the right type is in the top three 95.3% instead of 93.0%.
-  `--dry-run --json` adds `ranked_with_type_model`. The model file (40 MB)
-  is not released yet; `draft_model/` trains it (`run_type.bat`) and
-  `gca type-model convert` writes it.
+  adds `model_draft` and `subject_draft_source`. The commit hook does not
+  draft with the model.
+- **Ranking the types with a model**: the subject model's encoder
+  fine-tuned to tell the type from the files, the headers of up to four
+  related earlier commits and the changed lines. Its probabilities and the
+  built-in model's are averaged before the subject and the history tilt
+  them. On recent commits of projects gca never saw, with the history and
+  your own commits, the first suggestion is right 70.4% of the time instead
+  of 63.8% (73.7% instead of 70.8% with the subject), and the right type is
+  in the top three 95.3% instead of 93.0%. `--dry-run --json` adds
+  `ranked_with_type_model`. The commit hook uses it too.
+- Model files of your own: `gca config draft-model <FILE>` and
+  `gca config type-model <FILE>`, or `--draft-model`, `--type-model`,
+  `GCA_DRAFT_MODEL` and `GCA_TYPE_MODEL` for one run (empty turns a model
+  off). A model file can carry its own draft threshold or weight against
+  the built-in model (`--threshold`, `--weight`).
+- `draft_model/` prepares the data, trains both models on an NVIDIA GPU,
+  scores them, and documents the results and how to publish a model;
+  `gca draft-model convert` and `gca type-model convert` write a checkpoint
+  as the file gca loads.
+
+### Changed
+
+- The release binaries carry the models' runtime
+  ([candle](https://github.com/huggingface/candle)) and are about 4 MB
+  larger. `cargo build --no-default-features` builds gca without it.
 
 ## 0.5.1 (2026-10-04)
 

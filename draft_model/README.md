@@ -1,16 +1,18 @@
 # Subject model and type model
 
-Two small models gca can use in builds with the `t5` feature: one writes the
-subject (below), the other tells the type ([Type model](#type-model)).
+Two small models gca can use besides its built-in one: one writes the
+subject (below), the other tells the type ([Type model](#type-model)). Their
+files are published apart from gca, which downloads them with
+`gca model install` ([Publishing a model](#publishing-a-model)).
 
 A small sequence-to-sequence model that writes the subject of a Conventional
 Commit: [CodeT5-small](https://huggingface.co/Salesforce/codet5-small)
 (60.5 million parameters) fine-tuned on the same mined commits as the type
 model. It reads the type and scope chosen before the subject, the changed
 files, the headers of up to four earlier commits in the project, and the
-changed lines; it writes the subject. gca built with the `t5` feature runs it
-on the CPU and offers its draft when the model is sure enough of it
-([Subject drafts](../README.md#drafts-from-a-model-experimental)).
+changed lines; it writes the subject. gca runs it on the CPU and offers its
+draft when the model is sure enough of it
+([Models](../README.md#models-experimental)).
 
 ## Data
 
@@ -140,7 +142,7 @@ matrices in 8-bit blocks (Q8_0), 67 MB. From a checkpoint folder:
 
 ```
 cd gca-rs
-cargo run --release --features t5 -- draft-model convert ../draft_model/runs/ckpt-a gca-draft-q8.gguf
+cargo run --release -- draft-model convert ../draft_model/runs/ckpt-a gca-draft-q8.gguf
 ```
 
 - `gca-rs/src/t5draft/input.rs` lays out the input and picks the history
@@ -167,9 +169,9 @@ cargo run --release --features t5 -- draft-model convert ../draft_model/runs/ckp
 
 The same network's encoder, fine-tuned to tell the type: its states,
 averaged over the input's tokens, go through one linear layer to the eleven
-types. gca built with the `t5` feature averages its probabilities with the
-built-in model's before the subject and the history tilt the ranking
-([Ranking the types with a model](../README.md#ranking-the-types-with-a-model-experimental)).
+types. gca averages its probabilities with the built-in model's before the
+subject and the history tilt the ranking
+([Models](../README.md#models-experimental)).
 
 ### Data and training
 
@@ -256,6 +258,62 @@ and 1,500 history cases from the test commits matched them all).
   cloud Xeon (median of 1,000 test commits), plus 0.17 s to load the model,
   which gca does while it reads the history. Replaying the commits above, a
   dry run there took 0.2 to 0.35 s longer with the model.
+
+## Publishing a model
+
+The model files are published apart from gca, so a better model needs no
+new gca. gca reads the list of them, [`models.json`](../models.json), from
+the main branch of this repository:
+
+```json
+{
+  "schema": 1,
+  "models": [
+    {
+      "kind": "type",
+      "version": "2026.10.04",
+      "input_format": 1,
+      "url": "https://github.com/chainchen1103/git-diff-type/releases/download/models-2026.10.04/gca-type-2026.10.04.gguf",
+      "sha256": "2e3c70fd039c939ebff3ef83375f168d8f70ebf71775d631c29a36e48afe1f81",
+      "bytes": 39860928,
+      "notes": "the first type model"
+    }
+  ]
+}
+```
+
+`gca model install` and `gca model update` take, for each kind (`draft` or
+`type`), the entry with the highest version among those made for the input
+layout this gca gives the model (`input_format`), download its file into
+gca's models folder and check its size and SHA-256. To publish a new model:
+
+1. Convert the checkpoint with the gca it is for: `gca draft-model convert`
+   and `gca type-model convert` write the input layout into the file.
+   `--threshold` (subject model) also writes the confidence below which
+   drafts are held back, and `--weight` (type model) the weight of its
+   probabilities against the built-in model's, if the model needs other
+   values than gca's own (-0.3 and 0.5).
+2. Score it as above, and replay a few repositories through gca with it
+   (`replay.py`, `replay_type.py`).
+3. Upload the file to a GitHub release tagged `models-YYYY.MM.DD`, marked
+   as a pre-release: the install scripts download gca from the latest
+   release, which must stay gca's own.
+4. Add its entry to `models.json` (`sha256sum` and `wc -c` give the
+   checksum and the size) and push it to main. Leave the older entries in:
+   a gca that cannot read the new model's input layout still installs the
+   newest one it can.
+
+gca reads the list through raw.githubusercontent.com, which caches it for a
+few minutes; after that, `gca model update` moves everyone to the new
+model.
+
+A model trained on another input layout (`t5_format.py`,
+`prepare_type.py`) needs a gca that lays its input out the same way: change
+`input.rs` to match, raise `INPUT_FORMAT` or `TYPE_INPUT_FORMAT` in
+`gca-rs/src/t5draft/runtime.rs`, release that gca, and give the model's
+entry the new `input_format`. Older versions of gca keep the newest model
+made for theirs. A change to the list itself that older versions could not
+read raises its `schema`; they then ask for a newer gca.
 
 ## Files
 

@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "models": [
+    {
+      "kind": "draft",
+      "version": "2026.10.01",
+      "input_format": 1,
+      "url": "https://github.com/chainchen1103/git-diff-type/releases/download/models-2026.10.04/gca-draft-2026.10.01.gguf",
+      "sha256": "37e720b4bfc26ba4d5ba8a27fb6c3c37fdc3e1fff2ea4de21b0927384c2047fb",
+      "bytes": 66623392,
+      "notes": "the first subject model"
+    },
+    {
+      "kind": "type",
+      "version": "2026.10.04",
+      "input_format": 1,
+      "url": "https://github.com/chainchen1103/git-diff-type/releases/download/models-2026.10.04/gca-type-2026.10.04.gguf",
+      "sha256": "2e3c70fd039c939ebff3ef83375f168d8f70ebf71775d631c29a36e48afe1f81",
+      "bytes": 39860928,
+      "notes": "the first type model"
+    }
+  ]
+}

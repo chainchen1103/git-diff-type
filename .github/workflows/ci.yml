@@ -27,11 +27,11 @@ jobs:
         run: cargo clippy --release --all-targets -- -D warnings
       - name: Test
         run: cargo test --release
-      - name: Lint and test the subject model build (Linux)
+      - name: Lint and test the build without the models (Linux)
         if: runner.os == 'Linux'
         run: |
-          cargo clippy --release --all-targets --features t5 -- -D warnings
-          cargo test --release --features t5
+          cargo clippy --release --all-targets --no-default-features -- -D warnings
+          cargo test --release --no-default-features
       - name: Installer builds (Windows)
         if: runner.os == 'Windows'
         shell: bash

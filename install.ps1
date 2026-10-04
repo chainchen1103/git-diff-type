@@ -172,6 +172,11 @@ public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wP
         }
         $env:Path = (@($env:Path -split ';') | Where-Object { $_ -and -not (Test-SameDir $_ $Dir) }) -join ';'
         Remove-Item Env:GCA_UNINSTALL -ErrorAction SilentlyContinue
+        # where `gca model install` puts the models
+        $models = if ($env:GCA_MODELS_DIR) { $env:GCA_MODELS_DIR } elseif ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'gca\models' } else { $null }
+        if ($models -and (Test-Path -LiteralPath $models)) {
+            Write-Host "the models gca downloaded stay in $models; delete that folder to remove them"
+        }
         Write-Host 'settings stay in your git config; remove them with:  git config --global --remove-section gca'
     }
 

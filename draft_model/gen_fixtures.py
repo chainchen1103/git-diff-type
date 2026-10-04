@@ -8,7 +8,7 @@ exactly.
 
 --n and --n-history are the numbers of real commits for the two kinds of
 case; larger files check the port more thoroughly once
-(GCA_T5_FIXTURES=FILE GCA_T5_TYPE_FIXTURES=FILE2 cargo test --features t5 t5draft).
+(GCA_T5_FIXTURES=FILE GCA_T5_TYPE_FIXTURES=FILE2 cargo test t5draft).
 """
 import argparse
 import json

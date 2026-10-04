@@ -34,13 +34,18 @@ const MAX_NEW_TOKENS: usize = 48;
 const TOKENIZER_KEY: &str = "tokenizer.huggingface.json";
 /// Metadata key of the input layout the model was trained on; gca refuses
 /// a model made for another layout.
-const FORMAT_KEY: &str = "gca.draft.input_format";
-const INPUT_FORMAT: u32 = 1;
+pub const FORMAT_KEY: &str = "gca.draft.input_format";
+pub const INPUT_FORMAT: u32 = 1;
 /// The type model's input layout (input::type_format) and its types, in the
 /// order of its outputs.
-const TYPE_FORMAT_KEY: &str = "gca.type.input_format";
-const TYPE_INPUT_FORMAT: u32 = 1;
+pub const TYPE_FORMAT_KEY: &str = "gca.type.input_format";
+pub const TYPE_INPUT_FORMAT: u32 = 1;
 const TYPES_KEY: &str = "gca.type.classes";
+/// Settings a model file may carry for gca to use it with: the subject
+/// model's lowest confidence for a draft to be offered, the type model's
+/// weight against the built-in model.
+const THRESHOLD_KEY: &str = "gca.draft.threshold";
+const WEIGHT_KEY: &str = "gca.type.weight";
 
 struct Config {
     d_model: usize,
@@ -89,6 +94,7 @@ struct Encoder {
 /// The subject model and its tokenizer.
 pub struct Drafter {
     cfg: Config,
+    threshold: f32,
     shared: Tensor,
     lm_head: Linear,
     encoder: Encoder,
@@ -168,7 +174,8 @@ fn open(
     let found = meta_u32(&content, format_key)?;
     if found != format {
         bail!(
-            "{} was made for another version of gca (input format {found})",
+            "{} was made for another version of gca (input format {found}); \
+             `gca model update` installs one for this gca",
             path.display()
         );
     }
@@ -248,6 +255,15 @@ impl Encoder {
     }
 }
 
+/// An optional setting in the model file.
+fn meta_f32(content: &gguf_file::Content, key: &str) -> Result<Option<f32>> {
+    content
+        .metadata
+        .get(key)
+        .map(|v| v.to_f32().map_err(|e| anyhow!("{key}: {e}")))
+        .transpose()
+}
+
 fn meta_u32(content: &gguf_file::Content, key: &str) -> Result<u32> {
     content
         .metadata
@@ -263,6 +279,7 @@ impl Drafter {
         let device = Device::Cpu;
         let (content, file) = open(path, FORMAT_KEY, INPUT_FORMAT, "subject")?;
         let cfg = read_config(&content)?;
+        let threshold = meta_f32(&content, THRESHOLD_KEY)?.unwrap_or(super::THRESHOLD);
         let u = |key: &str| meta_u32(&content, &format!("t5.{key}")).map(|v| v as usize);
         let (layers, decoder_layers) = (u("num_layers")?, u("num_decoder_layers")?);
         let tokenizer = read_tokenizer(&content)?;
@@ -293,6 +310,7 @@ impl Drafter {
                 .float("decoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight")?,
             decoder_norm: w.float("decoder.final_layer_norm.weight")?,
             cfg,
+            threshold,
             shared,
             lm_head,
             encoder,
@@ -360,6 +378,7 @@ impl Drafter {
             draft: ModelDraft {
                 subject: super::input::py_strip(&text).to_string(),
                 confidence: (log_prob / count.max(1) as f64) as f32,
+                threshold: self.threshold,
                 repeats: 0,
             },
             steps: count,
@@ -431,6 +450,7 @@ impl Drafter {
 /// input's tokens, then a linear layer to the types.
 pub struct Classifier {
     cfg: Config,
+    weight: f64,
     shared: Tensor,
     encoder: Encoder,
     head: Linear,
@@ -445,6 +465,7 @@ impl Classifier {
         let device = Device::Cpu;
         let (content, file) = open(path, TYPE_FORMAT_KEY, TYPE_INPUT_FORMAT, "type")?;
         let cfg = read_config(&content)?;
+        let weight = meta_f32(&content, WEIGHT_KEY)?.map_or(super::TYPE_WEIGHT, f64::from);
         let layers = meta_u32(&content, "t5.num_layers")? as usize;
         let classes = content
             .metadata
@@ -473,6 +494,7 @@ impl Classifier {
         }
         Ok(Classifier {
             cfg,
+            weight,
             shared,
             encoder,
             head,
@@ -485,6 +507,12 @@ impl Classifier {
     /// The types, in the order of [`Classifier::probabilities`].
     pub fn classes(&self) -> &[String] {
         &self.classes
+    }
+
+    /// How much the model's probabilities count against the built-in
+    /// model's, from 0 to 1.
+    pub fn weight(&self) -> f64 {
+        self.weight
     }
 
     /// The input's token ids, cut to what the encoder reads.
@@ -616,9 +644,17 @@ pub struct Converted {
 /// model.safetensors and tokenizer.json) as one GGUF file gca can load: the
 /// matrices in 8-bit blocks (Q8_0) if `quantize`, the rest in 32-bit floats,
 /// and the configuration and tokenizer as metadata.
-pub fn convert(checkpoint: &Path, out: &Path, quantize: bool) -> Result<Converted> {
+pub fn convert(
+    checkpoint: &Path,
+    out: &Path,
+    quantize: bool,
+    threshold: Option<f32>,
+) -> Result<Converted> {
     let (config, mut metadata) = checkpoint_metadata(checkpoint)?;
     metadata.insert(1, (FORMAT_KEY.into(), gguf_file::Value::U32(INPUT_FORMAT)));
+    if let Some(t) = threshold {
+        metadata.push((THRESHOLD_KEY.into(), gguf_file::Value::F32(t)));
+    }
     if config["tie_word_embeddings"] == false {
         bail!("only T5 models with tied embeddings are supported");
     }
@@ -635,8 +671,19 @@ pub fn convert(checkpoint: &Path, out: &Path, quantize: bool) -> Result<Converte
 /// transformers T5EncoderModel, head.pt with the output layer and types.json)
 /// as one GGUF file, as [`convert`] does; the output layer stays in 32-bit
 /// floats.
-pub fn convert_classifier(checkpoint: &Path, out: &Path, quantize: bool) -> Result<Converted> {
+pub fn convert_classifier(
+    checkpoint: &Path,
+    out: &Path,
+    quantize: bool,
+    weight: Option<f32>,
+) -> Result<Converted> {
     let (_, mut metadata) = checkpoint_metadata(checkpoint)?;
+    if let Some(w) = weight {
+        if !(0.0..=1.0).contains(&w) {
+            bail!("the weight must be from 0 to 1");
+        }
+        metadata.push((WEIGHT_KEY.into(), gguf_file::Value::F32(w)));
+    }
     let types: Vec<String> = serde_json::from_str(
         &std::fs::read_to_string(checkpoint.join("types.json")).with_context(|| {
             format!("could not read {}", checkpoint.join("types.json").display())

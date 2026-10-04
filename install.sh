@@ -213,6 +213,17 @@ uninstall_gca() {
     if [ -n "$found" ] && [ "$found" != "$dir/gca" ]; then
         say "note: another gca is still installed at $found"
     fi
+    # where `gca model install` puts the models
+    models=${GCA_MODELS_DIR:-}
+    if [ -z "$models" ]; then
+        case "$(uname -s)" in
+        Darwin) models="$HOME/Library/Application Support/gca/models" ;;
+        *) models="${XDG_DATA_HOME:-$HOME/.local/share}/gca/models" ;;
+        esac
+    fi
+    if [ -d "$models" ]; then
+        say "the models gca downloaded stay in $models; delete that folder to remove them"
+    fi
     say "settings stay in your git config; remove them with:  git config --global --remove-section gca"
 }
 

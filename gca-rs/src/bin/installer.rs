@@ -120,9 +120,23 @@ mod win {
                 ok = false;
             }
         }
+        // where `gca model install` puts the models
+        let models = env::var_os("GCA_MODELS_DIR")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| {
+                env::var_os("LOCALAPPDATA")
+                    .filter(|v| !v.is_empty())
+                    .map(|d| PathBuf::from(d).join("gca").join("models"))
+            });
+        if let Some(models) = models.filter(|m| m.is_dir()) {
+            println!(
+                "\nthe models gca downloaded stay in {}; delete that folder to remove them",
+                models.display()
+            );
+        }
         println!("\nsettings stay in your git config; remove them with");
-        println!("  git config --global --unset gca.push");
-        println!("  git config --global --unset gca.remote");
+        println!("  git config --global --remove-section gca");
         ok
     }
 

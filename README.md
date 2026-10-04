@@ -9,7 +9,7 @@ Commit types with a built-in ML model, and suggests a scope from the project's
 own history. You confirm, type the subject line, and gca hands it to
 `git commit`.
 
-- **Offline, no API key.** The model is compiled into a single ~11 MB
+- **Offline, no API key.** The model is compiled into a single ~20 MB
   executable; your diff never leaves your machine.
 - **Measured on projects it never saw.** On 10,005 commits from 18
   repositories that were never used in training, all made after its training
@@ -74,6 +74,10 @@ installs a given release, `GCA_INSTALL_DIR` another folder, and
 
 Prebuilt binaries cover Windows x64 (which also runs on Windows on Arm),
 macOS on Apple silicon and Intel, and Linux x86_64. gca needs git.
+
+Optionally, `gca model install` then downloads two neural models (107 MB)
+that draft subjects and rank the types better than the built-in model
+alone; see [Models](#models-experimental).
 
 Other ways to install:
 
@@ -245,54 +249,60 @@ authors chose `chore` 96.6% of the time. A draft says what changed, while
 authors often wrote why: 6.8% of their subjects match the draft word for word,
 so a draft is only a default you can type over.
 
-### Drafts from a model (experimental)
+### Models (experimental)
 
-gca can also draft the subject of any change with a small neural model,
-CodeT5-small fine-tuned on the same commits ([draft_model/](draft_model/README.md)).
-It runs offline on the CPU, in builds with the `t5` feature, from a model
-file of 67 MB that is not part of a release yet (`draft_model/README.md`
-describes how it is made):
+Besides its built-in model, gca can use two small neural models, CodeT5-small
+fine-tuned on the same commits ([draft_model/](draft_model/README.md)): the
+**subject model** drafts the subject of any change, and the **type model**
+ranks the types together with the built-in model. They run offline on the
+CPU. Their files, 67 MB and 40 MB, are published apart from gca, so a better
+model needs no new gca:
 
 ```
-cargo install --path gca-rs --features t5
-gca config draft-model path/to/gca-draft-q8.gguf
+gca model install    # download the newest models this gca can use, and set them up
+gca model list       # the models set, and the newest ones published
+gca model update     # move to newer models, if any were published
+gca model remove     # stop using them and delete the files
 ```
 
-The model reads the type and scope you chose, the files, the headers of a few
-earlier commits and the changed lines. It drafts in the background while the
-type prompt is open, for the type and scope gca suggests, and again if you
-pick others. Its draft is offered only when the model is sure enough of it
-(the mean log-probability of its tokens is -0.3 or more) and the draft is
-not just the subject of one earlier commit, which the model sometimes
-copies; otherwise the rules above draft as before. On the recent commits of
-projects gca never saw, 13.0% of the commits get a model draft; 38.0% of
-those are the author's subject exactly and 59.9% save at least half the
-typing.
+`gca model install draft` or `gca model install type` takes one of the two.
+gca reads the list of models, [`models.json`](models.json), from this
+repository, downloads the files from its releases with `curl` into a folder
+of its own (`%LOCALAPPDATA%\gca\models` on Windows,
+`~/Library/Application Support/gca/models` on macOS,
+`~/.local/share/gca/models` elsewhere; `GCA_MODELS_DIR` names another),
+checks their checksums, and sets `gca.draftModel` and `gca.typeModel` in
+your global git config. A model made for another input layout than this gca
+gives it is skipped, so an older gca keeps the newest model it can use. gca
+goes online only for these commands. Model files of your own work too:
+`gca config draft-model <FILE>`, `gca config type-model <FILE>`, or
+`--draft-model`, `--type-model`, `GCA_DRAFT_MODEL` and `GCA_TYPE_MODEL` for
+one run (empty turns a model off). A gca built with
+`--no-default-features` has no models and is 4 MB smaller.
 
-`--dry-run` prints the model's draft and its confidence, offered or not;
-`--dry-run --json` has it as `model_draft`, and `subject_draft_source` says
-whether the model or the rules wrote `subject_draft`. `--draft-model <FILE>`
-or `GCA_DRAFT_MODEL` name the file for one run, and an empty
-`GCA_DRAFT_MODEL` turns the model off. A draft takes about 0.2 s on a recent
-laptop and 0.5 s on two cloud cores, and 250 MB of memory. The commit hook
-does not use the model.
+**Subject drafts.** The subject model reads the type and scope you chose,
+the files, the headers of a few earlier commits and the changed lines. It
+drafts in the background while the type prompt is open, for the type and
+scope gca suggests, and again if you pick others. Its draft is offered only
+when the model is sure enough of it (the mean log-probability of its tokens
+is -0.3 or more) and the draft is not just the subject of one earlier
+commit, which the model sometimes copies; otherwise the rules above draft as
+before. On the recent commits of projects gca never saw, 13.0% of the
+commits get a model draft; 38.0% of those are the author's subject exactly
+and 59.9% save at least half the typing. `--dry-run` prints the model's
+draft and its confidence, offered or not; `--dry-run --json` has it as
+`model_draft`, and `subject_draft_source` says whether the model or the
+rules wrote `subject_draft`. A draft takes about 0.2 s on a recent laptop
+and 0.5 s on two cloud cores, and 250 MB of memory. The commit hook does not
+draft with the model.
 
-### Ranking the types with a model (experimental)
-
-The same builds can also rank the types with a second model: CodeT5-small's
-encoder fine-tuned to tell the type from what the subject model reads,
+**Ranking the types.** The type model reads what the subject model reads
 without the type and scope, with the headers of up to four related earlier
 commits picked without knowing the type
-([draft_model/](draft_model/README.md#type-model)). Its file, 40 MB, is not
-part of a release yet either:
-
-```
-gca config type-model path/to/gca-type-q8.gguf
-```
-
-Its probabilities and the built-in model's are averaged (in log space, half
-each) before the subject, the project's history and your own commits tilt
-the ranking as before. On the recent commits of projects gca never saw:
+([draft_model/](draft_model/README.md#type-model)). Its probabilities and the
+built-in model's are averaged (in log space, half each) before the subject,
+the project's history and your own commits tilt the ranking as before. On
+the recent commits of projects gca never saw:
 
 | Ranking | Built-in model | With the type model |
 | --- | ---: | ---: |
@@ -304,13 +314,10 @@ type.) On the older commits of the same projects the first suggestion rises
 from 60.8% to 67.1%, and from 67.9% to 70.2% with the subject. `refactor`
 gains most; `perf` does not gain. Replayed through gca, the type it
 pre-selects was the author's for 45 of its own newest 60 commits instead of
-37, and for 115 of shadcn-ui's newest 150 instead of 100.
-
-`--type-model <FILE>` or `GCA_TYPE_MODEL` name the file for one run, an
-empty `GCA_TYPE_MODEL` turns it off, and `--dry-run --json` reports
-`ranked_with_type_model`. gca loads the model while it reads the history and
-runs it once before the type prompt: 0.25 s for a long change on two cloud
-cores, plus 0.17 s to load. The commit hook uses it too.
+37, and for 115 of shadcn-ui's newest 150 instead of 100. `--dry-run --json`
+reports `ranked_with_type_model`. gca loads the model while it reads the
+history and runs it once before the type prompt: 0.25 s for a long change on
+two cloud cores, plus 0.17 s to load. The commit hook uses it too.
 
 ## Accuracy
 
@@ -568,9 +575,9 @@ builds the installer on Windows.
 
 ## Roadmap
 
-- Ship the [subject model](#drafts-from-a-model-experimental): publish its
-  file with the releases, set its threshold on other projects than the ones
-  it is tested on, and complete the subject as you type
+- [Models](#models-experimental): set the subject model's threshold on
+  other projects than the ones it is tested on, and complete the subject as
+  you type
 - Better `refactor` / `perf`. Signs of whether behavior changed (0.5) help
   a little, more often putting them among the three, but the diff alone
   still almost never puts them first; the subject is what finds them

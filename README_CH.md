@@ -8,7 +8,7 @@ gca 讀取你準備 commit 的變更，用內建的 ML 模型排出最可能的 
 Commit 類型，並從專案歷史建議 scope。你確認、輸入一行摘要，它就交給
 `git commit` 完成。
 
-- **離線、不需要 API key**：模型編譯進約 11 MB 的單一執行檔，diff 不會離開你的電腦。
+- **離線、不需要 API key**：模型編譯進約 20 MB 的單一執行檔，diff 不會離開你的電腦。
 - **在沒看過的專案上實測**：10,005 個來自 18 個從未用於訓練的專案、在訓練資料截止後才出現的
   commit，正確類型出現在它列出的三個選項中的比例是 **86.5%**，只看 diff 時第一個建議的
   正確率是 45.5%（gca 0.4：85.9% 與 43.5%）。
@@ -64,6 +64,9 @@ irm https://raw.githubusercontent.com/chainchen1103/git-diff-type/main/install.p
 
 預先編譯的執行檔涵蓋 Windows x64（在 Windows on Arm 上也能執行）、macOS（Apple silicon 與 Intel）
 和 Linux x86_64。gca 需要 git。
+
+另外可以再執行 `gca model install`，下載兩個神經網路模型（107 MB），用來起草摘要，
+並比內建模型單獨使用時更準確地排序類型，見[模型](#模型實驗性)。
 
 其他安裝方式：
 
@@ -200,26 +203,49 @@ hook 絕不會擋下 commit。`GCA_HOOK=0 git commit ...` 可以略過一次，`
 作者有 96.6% 選了 `chore`。草稿寫的是改了什麼，作者常寫的卻是為什麼改，只有 6.8% 的摘要與草稿一字不差，
 所以草稿只是預設值，直接打字就能換掉。
 
-### 模型寫的草稿（實驗性）
+### 模型（實驗性）
 
-gca 也能用一個小型神經網路模型替任何變更起草摘要：在同一批 commit 上微調的 CodeT5-small
-（[draft_model/](draft_model/README.md)）。它離線在 CPU 上執行，需要以 `t5` feature 建置，
-並另外下載 67 MB 的模型檔（還沒有隨版本發佈，`draft_model/README.md` 說明了怎麼做出來）：
+除了內建模型，gca 還能用兩個小型神經網路模型，都是在同一批 commit 上微調的 CodeT5-small
+（[draft_model/](draft_model/README.md)）：**摘要模型**替任何變更起草摘要，**類型模型**和內建模型一起排序類型。
+它們離線在 CPU 上執行。模型檔（67 MB 與 40 MB）和 gca 分開發佈，所以有更好的模型時不必等新版 gca：
 
 ```
-cargo install --path gca-rs --features t5
-gca config draft-model path/to/gca-draft-q8.gguf
+gca model install    # 下載這個 gca 能用的最新模型並設定好
+gca model list       # 目前設定的模型，以及已發佈的最新模型
+gca model update     # 有新模型就換上
+gca model remove     # 不再使用，並刪除下載的檔案
 ```
 
-模型讀的是你選的類型與 scope、檔案、幾個先前 commit 的標頭和變更的行。它在類型選單開著時於背景起草，
+`gca model install draft` 或 `gca model install type` 只裝其中一個。gca 從本 repo 讀取模型清單
+[`models.json`](models.json)，用 `curl` 從 Releases 下載檔案到它自己的資料夾（Windows：`%LOCALAPPDATA%\gca\models`；
+macOS：`~/Library/Application Support/gca/models`；其他：`~/.local/share/gca/models`；`GCA_MODELS_DIR` 可指定別處），
+驗證 checksum，並在 git 全域設定裡設好 `gca.draftModel` 與 `gca.typeModel`。為不同輸入格式做的模型會被略過，
+所以舊版 gca 會停在它能用的最新模型。只有這幾個指令會連網。也可以用自己的模型檔：
+`gca config draft-model <FILE>`、`gca config type-model <FILE>`，或只對單次執行用 `--draft-model`、`--type-model`、
+`GCA_DRAFT_MODEL`、`GCA_TYPE_MODEL`（設為空字串則關閉）。以 `--no-default-features` 建置的 gca 不含模型，小 4 MB。
+
+**摘要草稿。** 摘要模型讀的是你選的類型與 scope、檔案、幾個先前 commit 的標頭和變更的行。它在類型選單開著時於背景起草，
 用的是 gca 建議的類型與 scope；你選了別的就重寫一次。模型夠有把握時（各 token 的平均對數機率在 -0.3 以上），
 而且草稿不只是照抄某一個先前 commit 的摘要（模型有時會這樣做）時，才會提供它的草稿，否則照舊由上面的規則起草。
 在 gca 沒看過的專案的近期 commit 上，13.0% 的 commit 會拿到模型草稿，其中 38.0% 與作者寫的摘要完全相同，59.9% 至少省下一半的打字。
-
 `--dry-run` 會印出模型的草稿和信心（不論有沒有提供）；`--dry-run --json` 放在 `model_draft`，
-`subject_draft_source` 則說明 `subject_draft` 是模型還是規則寫的。`--draft-model <FILE>` 或
-`GCA_DRAFT_MODEL` 可只對這次指定模型檔，`GCA_DRAFT_MODEL` 設為空字串則關閉模型。每次起草在近年的筆電上約 0.2 秒、
-雲端兩核約 0.5 秒，用掉約 250 MB 記憶體。commit hook 不使用模型。
+`subject_draft_source` 則說明 `subject_draft` 是模型還是規則寫的。每次起草在近年的筆電上約 0.2 秒、
+雲端兩核約 0.5 秒，用掉約 250 MB 記憶體。commit hook 不用模型起草。
+
+**排序類型。** 類型模型讀的是摘要模型讀的內容去掉類型與 scope，加上最多四個相關先前 commit 的標頭（挑選時不看類型；
+見 [draft_model/](draft_model/README.md#type-model)）。它的機率和內建模型的機率在對數空間各取一半平均後，
+再照舊依摘要、專案歷史和你自己的 commit 調整。在 gca 沒看過的專案的近期 commit 上：
+
+| 排序 | 內建模型 | 加上類型模型 |
+| --- | ---: | ---: |
+| diff、歷史與你自己的 commit | 63.8% · 93.0% · 56.2% | **70.4% · 95.3% · 62.0%** |
+| 同上再加摘要 | 70.8% · 94.9% · 60.3% | **73.7% · 96.1% · 63.5%** |
+
+（第一個建議正確 · 正確類型在前三 · 各類型平均召回率。）在同一批專案較舊的 commit 上，第一個建議正確的比例從 60.8% 升到 67.1%，
+加上摘要從 67.9% 升到 70.2%。進步最多的是 `refactor`，`perf` 沒有進步。把 commit 重新跑過 gca，
+預選的類型與作者相同的，在 gca 自己最新的 60 個 commit 中從 37 個增為 45 個，在 shadcn-ui 最新的 150 個中從 100 個增為 115 個。
+`--dry-run --json` 會回報 `ranked_with_type_model`。gca 在讀取歷史時載入模型，並在類型選單出現前執行一次：
+在雲端兩核上，長的變更約 0.25 秒，另加 0.17 秒載入。commit hook 也會使用它。
 
 ## 準確率
 
@@ -419,7 +445,7 @@ CI 在每次 push 時執行這些檢查（Rust 部分在 Windows、macOS、Linux
 
 ## Roadmap
 
-- 正式推出[摘要模型](#模型寫的草稿實驗性)：模型檔隨版本發佈、用測試以外的專案訂出門檻，並在你打字時接著補完摘要
+- [模型](#模型實驗性)：用測試以外的專案訂出摘要模型的門檻，並在你打字時接著補完摘要
 - 改善 `refactor` / `perf`。0.5 加入的「行為是否改變」跡象有一點幫助，它們更常出現在三個選項中，
   但只看 diff 時仍幾乎不會排第一；找出它們的還是摘要
 - 發現暫存內容混雜了不相關的變更時，建議拆成幾個 commit。只靠目錄、檔名和過去一起 commit 的紀錄來分組不夠：

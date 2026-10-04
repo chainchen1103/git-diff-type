@@ -8,10 +8,11 @@
 //! ([`THRESHOLD`]) and does not merely repeat one earlier commit's subject
 //! ([`ModelDraft::is_offered`]); otherwise gca falls back to the rules.
 //!
-//! The model runs only in builds with the `t5` feature, from a file the
-//! user downloads and names ([`model_path`]). It loads and drafts in the
-//! background while the type and scope prompts are open, for the type and
-//! scope gca suggests; another choice drafts again.
+//! The model runs only in builds with the `t5` feature (the default), from
+//! a file `gca model install` downloads (`models`) or one the user names
+//! ([`model_path`]). It loads and drafts in the background while the type
+//! and scope prompts are open, for the type and scope gca suggests; another
+//! choice drafts again.
 //!
 //! The same builds can also rank the types with a second model, the same
 //! encoder fine-tuned to tell the type ([`TypeModel`]), from its own file
@@ -24,6 +25,8 @@ use crate::history::LogEntry;
 
 pub mod input;
 #[cfg(feature = "t5")]
+pub mod models;
+#[cfg(feature = "t5")]
 pub mod runtime;
 
 /// git config key and environment variable naming the model file.
@@ -33,18 +36,22 @@ pub const MODEL_ENV: &str = "GCA_DRAFT_MODEL";
 pub const TYPE_MODEL_KEY: &str = "gca.typeModel";
 pub const TYPE_MODEL_ENV: &str = "GCA_TYPE_MODEL";
 
-/// The lowest mean log-probability per token at which a draft is offered.
-/// On 10,005 commits from projects held out from training, 13.0% of the
-/// commits got a draft; 38.0% of those drafts were the author's subject
-/// exactly and 59.9% saved at least half the typing (draft_model/README.md).
+/// The lowest mean log-probability per token at which a draft is offered,
+/// unless the model file sets its own (`gca.draft.threshold`). On 10,005
+/// commits from projects held out from training, 13.0% of the commits got a
+/// draft; 38.0% of those drafts were the author's subject exactly and 59.9%
+/// saved at least half the typing (draft_model/README.md).
+#[cfg_attr(not(feature = "t5"), allow(dead_code))]
 pub const THRESHOLD: f32 = -0.3;
 
 /// A subject the model wrote, how sure it was (the mean log-probability of
-/// its tokens, 0 for certain), and how many recent commits had it already.
+/// its tokens, 0 for certain), how sure the model must be for gca to offer
+/// it, and how many recent commits had it already.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelDraft {
     pub subject: String,
     pub confidence: f32,
+    pub threshold: f32,
     pub repeats: usize,
 }
 
@@ -55,7 +62,7 @@ impl ModelDraft {
     /// almost never right (2.6% of such sure drafts were exact), unlike a
     /// subject several commits share, such as `bump version` (80%).
     pub fn why_not_offered(&self) -> Option<&'static str> {
-        if self.confidence < THRESHOLD || self.subject.trim().is_empty() {
+        if self.confidence < self.threshold || self.subject.trim().is_empty() {
             Some("too unsure to offer")
         } else if self.repeats == 1 {
             Some("not offered: an earlier commit's subject")
@@ -95,6 +102,18 @@ fn path_from(flag: Option<&Path>, env: &str, key: &str) -> Option<PathBuf> {
     crate::git::get_config_path(key).map(PathBuf::from)
 }
 
+/// The type model's probabilities for a change, by type, and their weight
+/// against the built-in model's (half each unless the model file says
+/// otherwise, `gca.type.weight`).
+pub struct TypeProbabilities {
+    pub probs: Vec<(String, f64)>,
+    pub weight: f64,
+}
+
+/// The weight of the type model's probabilities when its file sets none.
+#[cfg_attr(not(feature = "t5"), allow(dead_code))]
+pub const TYPE_WEIGHT: f64 = 0.5;
+
 /// The type model, loading on another thread from the moment there is a
 /// change to rank, while gca reads the history it also needs.
 pub struct TypeModel {
@@ -117,7 +136,8 @@ impl TypeModel {
         TypeModel {}
     }
 
-    /// Each type's probability for the change, by name: its diff, the
+    /// Each type's probability for the change, by name, and the weight the
+    /// model file gives them against the built-in model's: its diff, the
     /// recent log, the staged files and who commits pick the model's input
     /// ([`input::type_history`], [`input::type_format`]). `None` if the
     /// model could not be used; the reason goes to stderr.
@@ -127,7 +147,7 @@ impl TypeModel {
         log: &[LogEntry],
         staged: &[String],
         me: Option<&str>,
-    ) -> Option<Vec<(String, f64)>> {
+    ) -> Option<TypeProbabilities> {
         #[cfg(feature = "t5")]
         {
             let result = self
@@ -138,7 +158,10 @@ impl TypeModel {
                 .and_then(|model| {
                     let history = input::type_history(log, staged, me);
                     let probs = model.probabilities(&input::type_format(diff, &history))?;
-                    Ok(model.classes().iter().cloned().zip(probs).collect())
+                    Ok(TypeProbabilities {
+                        probs: model.classes().iter().cloned().zip(probs).collect(),
+                        weight: model.weight(),
+                    })
                 });
             match result {
                 Ok(probs) => Some(probs),
@@ -256,6 +279,7 @@ mod tests {
         let draft = |confidence, repeats| ModelDraft {
             subject: "bump version".into(),
             confidence,
+            threshold: THRESHOLD,
             repeats,
         };
         assert!(draft(-0.1, 0).is_offered());

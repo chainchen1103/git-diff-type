@@ -171,6 +171,13 @@ enum Cmd {
         #[command(subcommand)]
         action: HookCmd,
     },
+    /// Install, update or list the models gca can use besides its built-in
+    /// one: the subject model drafts subjects, the type model ranks the types.
+    #[cfg(feature = "t5")]
+    Model {
+        #[command(subcommand)]
+        action: ModelCmd,
+    },
     /// Make and check the subject model's file (for developers).
     #[cfg(feature = "t5")]
     #[command(hide = true)]
@@ -189,6 +196,27 @@ enum Cmd {
 
 #[cfg(feature = "t5")]
 #[derive(Subcommand, Debug)]
+enum ModelCmd {
+    /// The models set for gca, and the newest ones published for it.
+    List,
+    /// Download the newest models this gca can use and set them up: both,
+    /// or the kinds named (draft, type).
+    Install {
+        #[arg(value_parser = ["draft", "type"])]
+        kinds: Vec<String>,
+    },
+    /// Replace the installed models with newer ones, if any were published.
+    Update,
+    /// Stop using the models (both, or the kinds named) and delete the files
+    /// gca downloaded.
+    Remove {
+        #[arg(value_parser = ["draft", "type"])]
+        kinds: Vec<String>,
+    },
+}
+
+#[cfg(feature = "t5")]
+#[derive(Subcommand, Debug)]
 enum TypeModelCmd {
     /// Write a checkpoint folder of draft_model/train_type.py (the encoder,
     /// head.pt, types.json, tokenizer.json) as the model file gca loads.
@@ -199,6 +227,10 @@ enum TypeModelCmd {
         /// against transformers.
         #[arg(long)]
         float: bool,
+        /// How much the model counts against the built-in one, from 0 to 1
+        /// (default 0.5), stored in the file.
+        #[arg(long)]
+        weight: Option<f32>,
     },
     /// Print each type's probability for each JSON line {"id", "i"} of model
     /// inputs, one JSON line each, with the time it took.
@@ -223,6 +255,10 @@ enum DraftModelCmd {
         /// check the runtime against transformers.
         #[arg(long)]
         float: bool,
+        /// The lowest confidence at which gca offers this model's drafts
+        /// (default -0.3), stored in the file.
+        #[arg(long, allow_negative_numbers = true)]
+        threshold: Option<f32>,
     },
     /// Draft a subject for each JSON line {"id", "i"} of model inputs and
     /// print one JSON line each, with the time it took.
@@ -363,6 +399,8 @@ fn main() -> ExitCode {
             }
         },
         #[cfg(feature = "t5")]
+        Some(Cmd::Model { action }) => model_cmd(action),
+        #[cfg(feature = "t5")]
         Some(Cmd::DraftModel { action }) => draft_model_cmd(action),
         #[cfg(feature = "t5")]
         Some(Cmd::TypeModel { action }) => type_model_cmd(action),
@@ -386,8 +424,9 @@ fn draft_model_cmd(action: &DraftModelCmd) -> Result<ExitCode> {
             checkpoint,
             out,
             float,
+            threshold,
         } => {
-            let done = t5draft::runtime::convert(checkpoint, out, !float)?;
+            let done = t5draft::runtime::convert(checkpoint, out, !float, *threshold)?;
             println!(
                 "wrote {} ({:.1} MB): {} tensors, {} of them in 8-bit blocks",
                 out.display(),
@@ -433,6 +472,159 @@ fn draft_model_cmd(action: &DraftModelCmd) -> Result<ExitCode> {
 }
 
 #[cfg(feature = "t5")]
+fn model_cmd(action: &ModelCmd) -> Result<ExitCode> {
+    use t5draft::models::{self, Installed, InstalledModel, Kind};
+    let kinds_of = |names: &[String]| -> Vec<Kind> {
+        if names.is_empty() {
+            Kind::ALL.to_vec()
+        } else {
+            Kind::ALL
+                .into_iter()
+                .filter(|k| names.iter().any(|n| n == k.name()))
+                .collect()
+        }
+    };
+    let dir = models::dir()?;
+    let mut installed = Installed::read(&dir);
+    // Whether gca.draftModel / gca.typeModel names the file gca installed.
+    let uses_installed = |kind: Kind, installed: &Installed| -> bool {
+        match (git::get_config_path(kind.config_key()), installed.get(kind)) {
+            (Some(set), Some(m)) => Path::new(&set) == m.file,
+            _ => false,
+        }
+    };
+    let install = |kind: Kind, entry: &models::Entry, installed: &mut Installed| -> Result<()> {
+        eprintln!("downloading the {} {} ...", kind.label(), entry.version);
+        let path = models::download(entry, &dir)?;
+        let shown = path.display().to_string();
+        git::set_config(kind.config_key(), &shown, false)?;
+        // earlier versions gca installed are no longer needed
+        if let Some(old) = installed.get(kind) {
+            if old.file != path {
+                let _ = std::fs::remove_file(&old.file);
+            }
+        }
+        installed.models.insert(
+            kind.name().to_string(),
+            InstalledModel {
+                version: entry.version.clone(),
+                file: path,
+                sha256: entry.sha256.clone(),
+            },
+        );
+        installed.write(&dir)?;
+        println!("{} {} installed: {shown}", kind.label(), entry.version);
+        Ok(())
+    };
+    match action {
+        ModelCmd::List => {
+            let manifest = models::fetch_manifest();
+            for kind in Kind::ALL {
+                let set = git::get_config_path(kind.config_key());
+                match (&set, installed.get(kind)) {
+                    (Some(_), Some(m)) if uses_installed(kind, &installed) => {
+                        println!("{}: {} ({})", kind.label(), m.version, m.file.display())
+                    }
+                    (Some(file), _) => println!("{}: your own file, {file}", kind.label()),
+                    (None, _) => println!("{}: not set", kind.label()),
+                }
+                if let Ok(manifest) = &manifest {
+                    match manifest.newest(kind) {
+                        None => println!("  none published for this gca"),
+                        Some(e) => {
+                            let note = e
+                                .notes
+                                .as_deref()
+                                .map(|n| format!(": {n}"))
+                                .unwrap_or_default();
+                            let state = match installed.get(kind) {
+                                Some(m)
+                                    if m.version == e.version
+                                        && uses_installed(kind, &installed) =>
+                                {
+                                    "up to date".to_string()
+                                }
+                                Some(_) if uses_installed(kind, &installed) => {
+                                    "newer; `gca model update`".to_string()
+                                }
+                                _ => format!("`gca model install {}`", kind.name()),
+                            };
+                            println!(
+                                "  newest {} ({:.0} MB){note}, {state}",
+                                e.version,
+                                e.bytes as f64 / 1e6
+                            );
+                        }
+                    }
+                }
+            }
+            if let Err(e) = manifest {
+                eprintln!(
+                    "{} {e:#}",
+                    style("could not check for newer models:").yellow()
+                );
+            }
+        }
+        ModelCmd::Install { kinds } => {
+            let manifest = models::fetch_manifest()?;
+            for kind in kinds_of(kinds) {
+                match manifest.newest(kind) {
+                    Some(entry) => install(kind, entry, &mut installed)?,
+                    None => println!("no {} is published for this gca", kind.label()),
+                }
+            }
+        }
+        ModelCmd::Update => {
+            let kinds: Vec<Kind> = Kind::ALL
+                .into_iter()
+                .filter(|&k| installed.get(k).is_some())
+                .collect();
+            if kinds.is_empty() {
+                println!("no models installed; `gca model install` installs them");
+                return Ok(ExitCode::SUCCESS);
+            }
+            let manifest = models::fetch_manifest()?;
+            for kind in kinds {
+                if !uses_installed(kind, &installed) {
+                    println!(
+                        "{} is set to another file; `gca model install {}` uses the published one",
+                        kind.label(),
+                        kind.name()
+                    );
+                    continue;
+                }
+                let (current, missing) = installed
+                    .get(kind)
+                    .map(|m| (m.version.clone(), !m.file.is_file()))
+                    .unwrap_or_default();
+                match manifest.newest(kind) {
+                    // newer, or its file was deleted
+                    Some(entry)
+                        if missing
+                            || models::compare_versions(&entry.version, &current)
+                                == std::cmp::Ordering::Greater =>
+                    {
+                        install(kind, entry, &mut installed)?
+                    }
+                    _ => println!("{} {current} is up to date", kind.label()),
+                }
+            }
+        }
+        ModelCmd::Remove { kinds } => {
+            for kind in kinds_of(kinds) {
+                git::unset_config(kind.config_key(), false)?;
+                if let Some(m) = installed.models.remove(kind.name()) {
+                    let _ = std::fs::remove_file(&m.file);
+                }
+                println!("{} removed", kind.label());
+            }
+            installed.write(&dir)?;
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(feature = "t5")]
 fn type_model_cmd(action: &TypeModelCmd) -> Result<ExitCode> {
     use std::io::{BufRead, Write};
     match action {
@@ -440,8 +632,9 @@ fn type_model_cmd(action: &TypeModelCmd) -> Result<ExitCode> {
             checkpoint,
             out,
             float,
+            weight,
         } => {
-            let done = t5draft::runtime::convert_classifier(checkpoint, out, !float)?;
+            let done = t5draft::runtime::convert_classifier(checkpoint, out, !float, *weight)?;
             println!(
                 "wrote {} ({:.1} MB): {} tensors, {} of them in 8-bit blocks",
                 out.display(),
@@ -577,7 +770,7 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
         &change,
         drafted.as_ref(),
         subject,
-        typed.as_deref(),
+        typed.as_ref(),
         &learned,
         &rules,
         cli.topk.into(),
@@ -718,7 +911,7 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
             &change,
             drafted.as_ref(),
             Some(&subject),
-            typed.as_deref(),
+            typed.as_ref(),
             &learned,
             &rules,
             cli.topk.into(),
@@ -925,7 +1118,7 @@ fn hook_run(file: &Path, source: Option<&str>) -> Result<()> {
         &change,
         drafted.as_ref(),
         subject,
-        typed.as_deref(),
+        typed.as_ref(),
         &learned,
         &rules,
         3,
@@ -1033,7 +1226,7 @@ fn rank<'m>(
     change: &Change,
     drafted: Option<&Draft>,
     subject: Option<&str>,
-    typed: Option<&[(String, f64)]>,
+    typed: Option<&t5draft::TypeProbabilities>,
     learned: &Learned,
     rules: &'m Rules,
     topk: usize,
@@ -1173,22 +1366,23 @@ fn rank<'m>(
 }
 
 /// The diff model's and the type model's probabilities averaged in log
-/// space, half each, as draft_model/eval_type.py scores them. Your own
-/// earlier commits are still read again by the diff model alone: on the
-/// held-out commits that ranks as well as reading them with both, without
-/// running the type model ten more times. `None` if the type model lacks
-/// one of the types.
+/// space, half each unless the type model's file says otherwise, as
+/// draft_model/eval_type.py scores them. Your own earlier commits are still
+/// read again by the diff model alone: on the held-out commits that ranks as
+/// well as reading them with both, without running the type model ten more
+/// times. `None` if the type model lacks one of the types.
 fn with_type_model_probs(
     classes: &[String],
     probs: &[f64],
-    typed: &[(String, f64)],
+    typed: &t5draft::TypeProbabilities,
 ) -> Option<Vec<f64>> {
+    let w = typed.weight;
     let scores = classes
         .iter()
         .zip(probs)
         .map(|(class, p)| {
-            let q = typed.iter().find(|(t, _)| t == class)?.1;
-            Some(0.5 * (p + 1e-12).ln() + 0.5 * (q + 1e-12).ln())
+            let q = typed.probs.iter().find(|(t, _)| t == class)?.1;
+            Some((1.0 - w) * (p + 1e-12).ln() + w * (q + 1e-12).ln())
         })
         .collect::<Option<Vec<f64>>>()?;
     Some(subject::softmax(&scores))

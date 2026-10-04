@@ -946,6 +946,163 @@ fn the_type_model_joins_the_ranking() {
     }
 }
 
+/// A file:// address curl can read, on Windows too.
+#[cfg(feature = "t5")]
+fn file_url(path: &Path) -> String {
+    let p = path.to_string_lossy().replace('\\', "/");
+    if p.starts_with('/') {
+        format!("file://{p}")
+    } else {
+        format!("file:///{p}")
+    }
+}
+
+#[cfg(feature = "t5")]
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// `gca model` against a model list and model files on disk: install takes
+/// the newest model this gca can read, update moves to a newer one, a bad
+/// checksum changes nothing, and remove undoes it all.
+#[cfg(feature = "t5")]
+#[test]
+fn models_install_update_and_remove() {
+    let repo = Repo::new();
+    let site = TempDir::new().unwrap();
+    let models = TempDir::new().unwrap();
+    let publish = |entries: &[(&str, &str, u32, &[u8], bool)]| {
+        let list: Vec<serde_json::Value> = entries
+            .iter()
+            .map(|(kind, version, format, bytes, good)| {
+                let file = site.path().join(format!("{kind}-{version}.bin"));
+                fs::write(&file, bytes).unwrap();
+                let sum = if *good {
+                    sha256_hex(bytes)
+                } else {
+                    "0".repeat(64)
+                };
+                serde_json::json!({"kind": kind, "version": version, "input_format": format,
+                    "url": file_url(&file), "sha256": sum, "bytes": bytes.len(),
+                    "notes": format!("{kind} {version}")})
+            })
+            .collect();
+        fs::write(
+            site.path().join("models.json"),
+            serde_json::json!({"schema": 1, "models": list}).to_string(),
+        )
+        .unwrap();
+    };
+    let gca = |args: &[&str]| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_gca"));
+        repo.env(&mut cmd);
+        cmd.args(args)
+            .env("GCA_MODELS_URL", file_url(&site.path().join("models.json")))
+            .env("GCA_MODELS_DIR", models.path())
+            .stdin(Stdio::null())
+            .output()
+            .unwrap()
+    };
+
+    publish(&[
+        ("draft", "2026.10.01", 1, b"draft one", true),
+        ("type", "2026.10.04", 1, b"type one", true),
+        ("type", "2027.01.01", 99, b"for a later gca", true),
+    ]);
+    let out = gca(&["model", "list"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(text.contains("subject model: not set"), "{text}");
+    assert!(text.contains("newest 2026.10.04"), "{text}");
+    assert!(
+        !text.contains("2027.01.01"),
+        "a model for another input layout: {text}"
+    );
+
+    let out = gca(&["model", "install"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stdout(&out).contains("type model 2026.10.04 installed"),
+        "{}",
+        stdout(&out)
+    );
+    let draft = repo.git(&["config", "--global", "gca.draftModel"]);
+    assert!(draft.trim().ends_with("draft-2026.10.01.gguf"), "{draft}");
+    assert_eq!(fs::read(draft.trim()).unwrap(), b"draft one");
+    let text = stdout(&gca(&["model", "list"]));
+    assert!(text.contains("type model: 2026.10.04"), "{text}");
+    assert!(text.contains("up to date"), "{text}");
+
+    // a newer type model; a damaged download changes nothing
+    publish(&[
+        ("draft", "2026.10.01", 1, b"draft one", true),
+        ("type", "2026.10.04", 1, b"type one", true),
+        ("type", "2026.11.20", 1, b"type two", false),
+    ]);
+    let out = gca(&["model", "update"]);
+    assert!(!out.status.success());
+    assert!(
+        stderr(&out).contains("is not the file the model list describes"),
+        "{}",
+        stderr(&out)
+    );
+    let set = repo.git(&["config", "--global", "gca.typeModel"]);
+    assert!(set.trim().ends_with("type-2026.10.04.gguf"), "{set}");
+
+    publish(&[
+        ("draft", "2026.10.01", 1, b"draft one", true),
+        ("type", "2026.10.04", 1, b"type one", true),
+        ("type", "2026.11.20", 1, b"type two", true),
+    ]);
+    let out = gca(&["model", "update"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let text = stdout(&out);
+    assert!(
+        text.contains("subject model 2026.10.01 is up to date"),
+        "{text}"
+    );
+    assert!(text.contains("type model 2026.11.20 installed"), "{text}");
+    let set = repo.git(&["config", "--global", "gca.typeModel"]);
+    assert_eq!(fs::read(set.trim()).unwrap(), b"type two");
+    assert!(
+        !models.path().join("type-2026.10.04.gguf").exists(),
+        "the old file is removed"
+    );
+
+    // a deleted file is downloaded again
+    fs::remove_file(set.trim()).unwrap();
+    let text = stdout(&gca(&["model", "update"]));
+    assert!(text.contains("type model 2026.11.20 installed"), "{text}");
+    assert_eq!(fs::read(set.trim()).unwrap(), b"type two");
+
+    // a file of your own is left alone by update
+    repo.write("mine.gguf", "my own model");
+    let mine = repo.path().join("mine.gguf");
+    repo.git(&[
+        "config",
+        "--global",
+        "gca.draftModel",
+        mine.to_str().unwrap(),
+    ]);
+    let text = stdout(&gca(&["model", "update"]));
+    assert!(
+        text.contains("subject model is set to another file"),
+        "{text}"
+    );
+    let text = stdout(&gca(&["model", "list"]));
+    assert!(text.contains("subject model: your own file"), "{text}");
+
+    let out = gca(&["model", "remove"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let out = repo.gca(&["config", "type-model"]);
+    assert!(stdout(&out).contains("(not set"), "{}", stdout(&out));
+    assert!(!models.path().join("type-2026.11.20.gguf").exists());
+}
+
 #[test]
 fn diff_settings_do_not_change_the_prediction() {
     let repo = Repo::new();
