@@ -143,6 +143,12 @@ struct Cli {
     #[arg(long, value_name = "FILE")]
     draft_model: Option<PathBuf>,
 
+    /// Rank the types with this type model file too (overrides gca.typeModel
+    /// and GCA_TYPE_MODEL; see `gca config type-model`).
+    #[cfg(feature = "t5")]
+    #[arg(long, value_name = "FILE")]
+    type_model: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Option<Cmd>,
 }
@@ -171,6 +177,37 @@ enum Cmd {
     DraftModel {
         #[command(subcommand)]
         action: DraftModelCmd,
+    },
+    /// Make and check the type model's file (for developers).
+    #[cfg(feature = "t5")]
+    #[command(hide = true)]
+    TypeModel {
+        #[command(subcommand)]
+        action: TypeModelCmd,
+    },
+}
+
+#[cfg(feature = "t5")]
+#[derive(Subcommand, Debug)]
+enum TypeModelCmd {
+    /// Write a checkpoint folder of draft_model/train_type.py (the encoder,
+    /// head.pt, types.json, tokenizer.json) as the model file gca loads.
+    Convert {
+        checkpoint: PathBuf,
+        out: PathBuf,
+        /// Keep every weight in 32-bit floats, to check the runtime
+        /// against transformers.
+        #[arg(long)]
+        float: bool,
+    },
+    /// Print each type's probability for each JSON line {"id", "i"} of model
+    /// inputs, one JSON line each, with the time it took.
+    Bench {
+        model: PathBuf,
+        inputs: PathBuf,
+        /// Only the first N inputs.
+        #[arg(long)]
+        limit: Option<usize>,
     },
 }
 
@@ -251,6 +288,15 @@ enum ConfigCmd {
         #[arg(long)]
         local: bool,
     },
+    /// The type model file: gca ranks the types with it and the built-in
+    /// model together. "" turns it off.
+    #[cfg(feature = "t5")]
+    TypeModel {
+        path: Option<String>,
+        /// Store the setting in this repository only.
+        #[arg(long)]
+        local: bool,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -318,6 +364,8 @@ fn main() -> ExitCode {
         },
         #[cfg(feature = "t5")]
         Some(Cmd::DraftModel { action }) => draft_model_cmd(action),
+        #[cfg(feature = "t5")]
+        Some(Cmd::TypeModel { action }) => type_model_cmd(action),
         None => commit_flow(&cli),
     };
     match result {
@@ -384,6 +432,62 @@ fn draft_model_cmd(action: &DraftModelCmd) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+#[cfg(feature = "t5")]
+fn type_model_cmd(action: &TypeModelCmd) -> Result<ExitCode> {
+    use std::io::{BufRead, Write};
+    match action {
+        TypeModelCmd::Convert {
+            checkpoint,
+            out,
+            float,
+        } => {
+            let done = t5draft::runtime::convert_classifier(checkpoint, out, !float)?;
+            println!(
+                "wrote {} ({:.1} MB): {} tensors, {} of them in 8-bit blocks",
+                out.display(),
+                done.bytes as f64 / 1e6,
+                done.tensors,
+                done.quantized
+            );
+        }
+        TypeModelCmd::Bench {
+            model,
+            inputs,
+            limit,
+        } => {
+            let t0 = std::time::Instant::now();
+            let classifier = t5draft::runtime::Classifier::load(model)?;
+            eprintln!("loaded in {} ms", t0.elapsed().as_millis());
+            let file = std::fs::File::open(inputs)
+                .with_context(|| format!("could not open {}", inputs.display()))?;
+            let mut out = std::io::stdout().lock();
+            for line in std::io::BufReader::new(file)
+                .lines()
+                .take(limit.unwrap_or(usize::MAX))
+            {
+                let row: serde_json::Value = serde_json::from_str(&line?)?;
+                let input = row["i"].as_str().context("an input line has no \"i\"")?;
+                let t0 = std::time::Instant::now();
+                let tokens = classifier.tokens(input)?;
+                let probs = classifier.probabilities_of(&tokens)?;
+                let ms = t0.elapsed().as_secs_f64() * 1000.0;
+                let p: serde_json::Map<String, serde_json::Value> = classifier
+                    .classes()
+                    .iter()
+                    .zip(&probs)
+                    .map(|(c, &v)| (c.clone(), serde_json::json!(v)))
+                    .collect();
+                writeln!(
+                    out,
+                    "{}",
+                    serde_json::json!({"id": row["id"], "p": p, "ms": ms, "in_tokens": tokens.len()})
+                )?;
+            }
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
 /// Ctrl-C inside a prompt arrives as an interrupted read.
 fn is_interrupt(e: &anyhow::Error) -> bool {
     e.chain().any(|cause| {
@@ -440,6 +544,11 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
         explain_nothing_to_commit(mode)?;
         return Ok(ExitCode::FAILURE);
     };
+    // The type model, if there is one and the type is to be suggested,
+    // loads while the history is read.
+    let type_model = type_model_path(cli)
+        .filter(|_| cli.kind.is_none() || cli.dry_run)
+        .map(t5draft::TypeModel::start);
 
     let model = load_model(cli.model.as_deref())?;
     let drafted = draft::draft(&change.files, &change.diff);
@@ -454,10 +563,12 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
     let paths: Vec<String> = change.files.iter().map(|f| f.path.clone()).collect();
     let me = git::author_ident();
     let learned = Learned::read(&model, &log, &paths, me.as_deref());
+    let typed = type_model.and_then(|m| m.probabilities(&change.diff, &log, &paths, me.as_deref()));
     let Ranking {
         types: ranked,
         preselect,
         with_subject,
+        with_type_model,
         with_history,
         with_file_history,
         with_own_commits,
@@ -466,6 +577,7 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
         &change,
         drafted.as_ref(),
         subject,
+        typed.as_deref(),
         &learned,
         &rules,
         cli.topk.into(),
@@ -507,6 +619,7 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
                     .as_ref()
                     .map(|d| (d, guess_kind.as_str(), guess_scope.as_deref())),
                 ranked_with_subject: subject.filter(|_| with_subject),
+                ranked_with_type_model: with_type_model,
                 ranked_with_history: with_history,
                 ranked_with_file_history: with_file_history,
                 ranked_with_own_commits: with_own_commits,
@@ -605,6 +718,7 @@ fn commit_flow(cli: &Cli) -> Result<ExitCode> {
             &change,
             drafted.as_ref(),
             Some(&subject),
+            typed.as_deref(),
             &learned,
             &rules,
             cli.topk.into(),
@@ -792,6 +906,7 @@ fn hook_run(file: &Path, source: Option<&str>) -> Result<()> {
     let Some(change) = read_change(Mode::Staged, &[])? else {
         return Ok(());
     };
+    let type_model = t5draft::type_model_path(None).map(t5draft::TypeModel::start);
     let model = load_model(None)?;
     let drafted = draft::draft(&change.files, &change.diff);
     let draft_subject = drafted.as_ref().map(|d| d.subject.as_str());
@@ -803,12 +918,14 @@ fn hook_run(file: &Path, source: Option<&str>) -> Result<()> {
     let paths: Vec<String> = change.files.iter().map(|f| f.path.clone()).collect();
     let me = git::author_ident();
     let learned = Learned::read(&model, &log, &paths, me.as_deref());
+    let typed = type_model.and_then(|m| m.probabilities(&change.diff, &log, &paths, me.as_deref()));
     let rules = project_rules();
     let ranking = rank(
         &model,
         &change,
         drafted.as_ref(),
         subject,
+        typed.as_deref(),
         &learned,
         &rules,
         3,
@@ -839,6 +956,18 @@ fn unmatched_path(e: anyhow::Error, paths: &[String]) -> anyhow::Error {
         ),
         None => e,
     }
+}
+
+/// The type model file, if one is set and this build can run it.
+fn type_model_path(cli: &Cli) -> Option<PathBuf> {
+    #[cfg(feature = "t5")]
+    let flag = cli.type_model.as_deref();
+    #[cfg(not(feature = "t5"))]
+    let flag = {
+        let _ = cli;
+        None
+    };
+    t5draft::type_model_path(flag)
 }
 
 /// The subject model file, if one is set and this build can run it.
@@ -879,6 +1008,8 @@ struct Ranking<'m> {
     preselect: usize,
     /// Whether the subject was taken into account.
     with_subject: bool,
+    /// Whether the type model's probabilities were averaged in.
+    with_type_model: bool,
     /// How many of the project's recent typed commits were taken into account.
     with_history: usize,
     /// How many of those touched a file in this change.
@@ -887,7 +1018,8 @@ struct Ranking<'m> {
     with_own_commits: usize,
 }
 
-/// A known subject's model is combined with the diff model's, the result is
+/// The type model's probabilities, if there are any, are averaged with the
+/// diff model's, a known subject's model is combined with them, the result is
 /// tilted toward the types the project itself uses, then toward the ones its
 /// commits to the same files used, then by the types you chose for your own
 /// recent commits, and types its commitlint config does not allow drop out.
@@ -895,17 +1027,26 @@ struct Ranking<'m> {
 /// (docs, test, ci) or the type a subject draft implies (a release is
 /// `chore`) is pre-selected even when ranked lower, as long as the model
 /// knows that type.
+#[allow(clippy::too_many_arguments)]
 fn rank<'m>(
     model: &'m Model,
     change: &Change,
     drafted: Option<&Draft>,
     subject: Option<&str>,
+    typed: Option<&[(String, f64)]>,
     learned: &Learned,
     rules: &'m Rules,
     topk: usize,
 ) -> Result<Ranking<'m>> {
     let Learned { habits, own } = learned;
     let mut probs = diff_probs(model, &change.diff, &change.stats)?;
+    let mut with_type_model = false;
+    if let Some(mixed) =
+        typed.and_then(|t| with_type_model_probs(&model.payload.classes, &probs, t))
+    {
+        probs = mixed;
+        with_type_model = true;
+    }
     let subjects = match subject {
         Some(_) => Some(SubjectModel::embedded().context("the built-in subject model is invalid")?),
         None => None,
@@ -1024,10 +1165,33 @@ fn rank<'m>(
         types: ranked,
         preselect,
         with_subject,
+        with_type_model,
         with_history,
         with_file_history,
         with_own_commits,
     })
+}
+
+/// The diff model's and the type model's probabilities averaged in log
+/// space, half each, as draft_model/eval_type.py scores them. Your own
+/// earlier commits are still read again by the diff model alone: on the
+/// held-out commits that ranks as well as reading them with both, without
+/// running the type model ten more times. `None` if the type model lacks
+/// one of the types.
+fn with_type_model_probs(
+    classes: &[String],
+    probs: &[f64],
+    typed: &[(String, f64)],
+) -> Option<Vec<f64>> {
+    let scores = classes
+        .iter()
+        .zip(probs)
+        .map(|(class, p)| {
+            let q = typed.iter().find(|(t, _)| t == class)?.1;
+            Some(0.5 * (p + 1e-12).ln() + 0.5 * (q + 1e-12).ln())
+        })
+        .collect::<Option<Vec<f64>>>()?;
+    Some(subject::softmax(&scores))
 }
 
 /// The diff model's probabilities for a change.
@@ -1177,6 +1341,7 @@ struct JsonExtras<'a> {
     /// What the model wrote, for which type and scope, offered or not.
     model_draft: Option<(&'a t5draft::ModelDraft, &'a str, Option<&'a str>)>,
     ranked_with_subject: Option<&'a str>,
+    ranked_with_type_model: bool,
     ranked_with_history: usize,
     ranked_with_file_history: usize,
     ranked_with_own_commits: usize,
@@ -1194,6 +1359,7 @@ fn print_json(
         offered,
         model_draft,
         ranked_with_subject,
+        ranked_with_type_model,
         ranked_with_history,
         ranked_with_file_history,
         ranked_with_own_commits,
@@ -1233,6 +1399,7 @@ fn print_json(
             "scope": scope,
         })),
         "ranked_with_subject": ranked_with_subject,
+        "ranked_with_type_model": ranked_with_type_model,
         "ranked_with_history": ranked_with_history,
         "ranked_with_file_history": ranked_with_file_history,
         "ranked_with_own_commits": ranked_with_own_commits,
@@ -1332,8 +1499,26 @@ fn prompt_order() -> Result<Order> {
 
 fn config(what: &ConfigCmd) -> Result<ExitCode> {
     #[cfg(feature = "t5")]
-    if let ConfigCmd::DraftModel { path, local } = what {
-        return config_draft_model(path.as_deref(), *local);
+    match what {
+        ConfigCmd::DraftModel { path, local } => {
+            return config_model_file(
+                t5draft::MODEL_KEY,
+                path.as_deref(),
+                *local,
+                "(not set: no model drafts)",
+                "subjects are drafted by the rules only",
+            )
+        }
+        ConfigCmd::TypeModel { path, local } => {
+            return config_model_file(
+                t5draft::TYPE_MODEL_KEY,
+                path.as_deref(),
+                *local,
+                "(not set: the built-in model ranks alone)",
+                "the built-in model ranks the types alone",
+            )
+        }
+        _ => {}
     }
     let (key, value, local, unset) = match what {
         ConfigCmd::Push { mode, local } => (PUSH_KEY, mode, *local, "never (default)"),
@@ -1345,7 +1530,7 @@ fn config(what: &ConfigCmd) -> Result<ExitCode> {
         ),
         ConfigCmd::Order { order, local } => (ORDER_KEY, order, *local, "type-first (default)"),
         #[cfg(feature = "t5")]
-        ConfigCmd::DraftModel { .. } => unreachable!("handled above"),
+        ConfigCmd::DraftModel { .. } | ConfigCmd::TypeModel { .. } => unreachable!("handled above"),
     };
     match value {
         None => {
@@ -1368,15 +1553,21 @@ fn config(what: &ConfigCmd) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// `gca config draft-model [PATH]`: the path is stored absolute, so it
-/// works from any directory; "" removes the setting.
+/// `gca config draft-model [PATH]` and `gca config type-model [PATH]`: the
+/// path is stored absolute, so it works from any directory; "" removes the
+/// setting.
 #[cfg(feature = "t5")]
-fn config_draft_model(path: Option<&str>, local: bool) -> Result<ExitCode> {
-    let key = t5draft::MODEL_KEY;
+fn config_model_file(
+    key: &str,
+    path: Option<&str>,
+    local: bool,
+    unset: &str,
+    removed: &str,
+) -> Result<ExitCode> {
     let Some(path) = path else {
         match git::get_config_path(key) {
             Some(p) => println!("{key} = {p}"),
-            None => println!("{key} = (not set: no model drafts)"),
+            None => println!("{key} = {unset}"),
         }
         return Ok(ExitCode::SUCCESS);
     };
@@ -1385,7 +1576,7 @@ fn config_draft_model(path: Option<&str>, local: bool) -> Result<ExitCode> {
     }
     if path.trim().is_empty() {
         git::unset_config(key, local)?;
-        println!("{key} removed; subjects are drafted by the rules only");
+        println!("{key} removed; {removed}");
         return Ok(ExitCode::SUCCESS);
     }
     let file = std::path::absolute(path).with_context(|| format!("not a usable path: {path}"))?;

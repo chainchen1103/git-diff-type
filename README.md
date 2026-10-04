@@ -277,6 +277,41 @@ or `GCA_DRAFT_MODEL` name the file for one run, and an empty
 laptop and 0.5 s on two cloud cores, and 250 MB of memory. The commit hook
 does not use the model.
 
+### Ranking the types with a model (experimental)
+
+The same builds can also rank the types with a second model: CodeT5-small's
+encoder fine-tuned to tell the type from what the subject model reads,
+without the type and scope, with the headers of up to four related earlier
+commits picked without knowing the type
+([draft_model/](draft_model/README.md#type-model)). Its file, 40 MB, is not
+part of a release yet either:
+
+```
+gca config type-model path/to/gca-type-q8.gguf
+```
+
+Its probabilities and the built-in model's are averaged (in log space, half
+each) before the subject, the project's history and your own commits tilt
+the ranking as before. On the recent commits of projects gca never saw:
+
+| Ranking | Built-in model | With the type model |
+| --- | ---: | ---: |
+| Diff, history and your own commits | 63.8% · 93.0% · 56.2% | **70.4% · 95.3% · 62.0%** |
+| The same with the subject | 70.8% · 94.9% · 60.3% | **73.7% · 96.1% · 63.5%** |
+
+(First suggestion right · right type in the top three · average recall per
+type.) On the older commits of the same projects the first suggestion rises
+from 60.8% to 67.1%, and from 67.9% to 70.2% with the subject. `refactor`
+gains most; `perf` does not gain. Replayed through gca, the type it
+pre-selects was the author's for 45 of its own newest 60 commits instead of
+37, and for 115 of shadcn-ui's newest 150 instead of 100.
+
+`--type-model <FILE>` or `GCA_TYPE_MODEL` name the file for one run, an
+empty `GCA_TYPE_MODEL` turns it off, and `--dry-run --json` reports
+`ranked_with_type_model`. gca loads the model while it reads the history and
+runs it once before the type prompt: 0.25 s for a long change on two cloud
+cores, plus 0.17 s to load. The commit hook uses it too.
+
 ## Accuracy
 
 The model is trained on **437,945 commits** from 5,925 repositories: 342,347 written by people in 36 open-source projects that follow Conventional Commits, landed before 2026-04-20 (bot commits left out), and 95,598 from the public CommitChronicle and CommitBench datasets, without any organization that owns a test project. Testing uses three separate sets of commits mined from public

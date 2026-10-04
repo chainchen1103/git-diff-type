@@ -1,7 +1,7 @@
 # Subject model and type model
 
-Two small models: one writes the subject (below), which gca can use in
-builds with the `t5` feature, the other tells the type ([Type model](#type-model)).
+Two small models gca can use in builds with the `t5` feature: one writes the
+subject (below), the other tells the type ([Type model](#type-model)).
 
 A small sequence-to-sequence model that writes the subject of a Conventional
 Commit: [CodeT5-small](https://huggingface.co/Salesforce/codet5-small)
@@ -167,7 +167,9 @@ cargo run --release --features t5 -- draft-model convert ../draft_model/runs/ckp
 
 The same network's encoder, fine-tuned to tell the type: its states,
 averaged over the input's tokens, go through one linear layer to the eleven
-types.
+types. gca built with the `t5` feature averages its probabilities with the
+built-in model's before the subject and the history tilt the ranking
+([Ranking the types with a model](../README.md#ranking-the-types-with-a-model-experimental)).
 
 ### Data and training
 
@@ -230,6 +232,30 @@ headers of related earlier commits too, the built-in model only the diff.
   `test_seen_recent` instead (the training projects' recent commits),
   other weights would have gained 0.7 points without the subject and lost
   0.2 with it on the recent commits.
+- `replay_type.py` replays a repository's newest typed commits by people
+  through gca with and without the model. The pre-selected type was the
+  author's for 45 of gca's own newest 60 commits instead of 37, for 115 of
+  shadcn-ui's newest 150 instead of 100, for 107 of vite's instead of 98,
+  and for 116 of astro's instead of 109.
+
+### In gca
+
+`gca type-model convert` writes a checkpoint as one GGUF file with the
+tokenizer inside: the encoder's matrices in 8-bit blocks, the output layer
+in 32-bit floats, 40 MB. `gca-rs/src/t5draft/runtime.rs` runs it with the
+subject model's encoder code; `input.rs` lays out the input and picks the
+history lines as `prepare_type.py` does (`gen_fixtures.py` writes the cases
+`gca-rs/tests/t5_type_fixtures.json` holds; a one-off run with 1,526 inputs
+and 1,500 history cases from the test commits matched them all).
+
+- With the checkpoint's own 32-bit weights, gca's probabilities are
+  transformers' on the CPU within 6e-7 (60 test commits, the same token
+  ids). With the 8-bit file, on 1,000 test commits, the first type is the
+  GPU run's for 996, and right for 740 against the GPU's 739.
+- Reading a full 512-token input takes 0.25 s on two cores of a 2.1 GHz
+  cloud Xeon (median of 1,000 test commits), plus 0.17 s to load the model,
+  which gca does while it reads the history. Replaying the commits above, a
+  dry run there took 0.2 to 0.35 s longer with the model.
 
 ## Files
 
@@ -244,8 +270,9 @@ headers of related earlier commits too, the built-in model only the diff.
 | `score.py`, `confidence.py` | the tables above |
 | `replay.py` | replays a repository's commits through gca (`python draft_model/replay.py GCA REPO MODEL N OUT.jsonl`); it adds and removes a temporary git worktree |
 | `baseline_files.py` | the file-overlap baseline |
-| `gen_fixtures.py` | the Rust port's test cases, `gca-rs/tests/t5_input_fixtures.json` |
+| `gen_fixtures.py` | the Rust port's test cases, `gca-rs/tests/t5_input_fixtures.json` and `t5_type_fixtures.json` |
 | `prepare_type.py` | builds `type_data/` for the type model from `datasets/` |
 | `run_type.bat` | trains the type model and writes its predictions (Windows, NVIDIA GPU) |
 | `train_type.py`, `predict_type.py` | fine-tunes the type model (`--resume` continues), writes `type_predictions/` |
 | `eval_type.py` | the type model's tables above |
+| `replay_type.py` | replays a repository's commits through gca with and without the type model (`python draft_model/replay_type.py GCA TYPE_MODEL REPO N`) |

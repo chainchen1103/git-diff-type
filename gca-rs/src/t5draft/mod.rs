@@ -12,6 +12,11 @@
 //! user downloads and names ([`model_path`]). It loads and drafts in the
 //! background while the type and scope prompts are open, for the type and
 //! scope gca suggests; another choice drafts again.
+//!
+//! The same builds can also rank the types with a second model, the same
+//! encoder fine-tuned to tell the type ([`TypeModel`]), from its own file
+//! ([`type_model_path`]). Its probabilities are averaged with the diff
+//! model's before the subject and the history tilt them.
 
 use std::path::{Path, PathBuf};
 
@@ -24,6 +29,9 @@ pub mod runtime;
 /// git config key and environment variable naming the model file.
 pub const MODEL_KEY: &str = "gca.draftModel";
 pub const MODEL_ENV: &str = "GCA_DRAFT_MODEL";
+/// The same for the type model.
+pub const TYPE_MODEL_KEY: &str = "gca.typeModel";
+pub const TYPE_MODEL_ENV: &str = "GCA_TYPE_MODEL";
 
 /// The lowest mean log-probability per token at which a draft is offered.
 /// On 10,005 commits from projects held out from training, 13.0% of the
@@ -65,16 +73,91 @@ impl ModelDraft {
 /// An empty GCA_DRAFT_MODEL turns the model off. Always `None` in builds
 /// without the model.
 pub fn model_path(flag: Option<&Path>) -> Option<PathBuf> {
+    path_from(flag, MODEL_ENV, MODEL_KEY)
+}
+
+/// The type model file: `--type-model`, else GCA_TYPE_MODEL, else
+/// gca.typeModel, as for [`model_path`].
+pub fn type_model_path(flag: Option<&Path>) -> Option<PathBuf> {
+    path_from(flag, TYPE_MODEL_ENV, TYPE_MODEL_KEY)
+}
+
+fn path_from(flag: Option<&Path>, env: &str, key: &str) -> Option<PathBuf> {
     if !cfg!(feature = "t5") {
         return None;
     }
     if let Some(path) = flag {
         return Some(path.to_path_buf());
     }
-    if let Some(value) = std::env::var_os(MODEL_ENV) {
+    if let Some(value) = std::env::var_os(env) {
         return (!value.is_empty()).then(|| PathBuf::from(value));
     }
-    crate::git::get_config_path(MODEL_KEY).map(PathBuf::from)
+    crate::git::get_config_path(key).map(PathBuf::from)
+}
+
+/// The type model, loading on another thread from the moment there is a
+/// change to rank, while gca reads the history it also needs.
+pub struct TypeModel {
+    #[cfg(feature = "t5")]
+    path: PathBuf,
+    #[cfg(feature = "t5")]
+    loading: std::thread::JoinHandle<anyhow::Result<runtime::Classifier>>,
+}
+
+impl TypeModel {
+    #[cfg(feature = "t5")]
+    pub fn start(path: PathBuf) -> Self {
+        let file = path.clone();
+        let loading = std::thread::spawn(move || runtime::Classifier::load(&file));
+        TypeModel { path, loading }
+    }
+
+    #[cfg(not(feature = "t5"))]
+    pub fn start(_path: PathBuf) -> Self {
+        TypeModel {}
+    }
+
+    /// Each type's probability for the change, by name: its diff, the
+    /// recent log, the staged files and who commits pick the model's input
+    /// ([`input::type_history`], [`input::type_format`]). `None` if the
+    /// model could not be used; the reason goes to stderr.
+    pub fn probabilities(
+        self,
+        diff: &str,
+        log: &[LogEntry],
+        staged: &[String],
+        me: Option<&str>,
+    ) -> Option<Vec<(String, f64)>> {
+        #[cfg(feature = "t5")]
+        {
+            let result = self
+                .loading
+                .join()
+                .map_err(|_| anyhow::anyhow!("it stopped unexpectedly"))
+                .and_then(|r| r)
+                .and_then(|model| {
+                    let history = input::type_history(log, staged, me);
+                    let probs = model.probabilities(&input::type_format(diff, &history))?;
+                    Ok(model.classes().iter().cloned().zip(probs).collect())
+                });
+            match result {
+                Ok(probs) => Some(probs),
+                Err(e) => {
+                    eprintln!(
+                        "{} could not use the type model {}: {e:#}",
+                        console::style("warning:").yellow().bold(),
+                        self.path.display()
+                    );
+                    None
+                }
+            }
+        }
+        #[cfg(not(feature = "t5"))]
+        {
+            let _ = (diff, log, staged, me);
+            None
+        }
+    }
 }
 
 /// What the model needs besides the type and scope.

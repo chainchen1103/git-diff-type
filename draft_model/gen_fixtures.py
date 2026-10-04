@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Write gca-rs/tests/t5_input_fixtures.json: what t5_format.py and
-prepare.py make of held-out commits and of edge cases, for the Rust port
-(gca-rs/src/t5draft/input.rs) to reproduce exactly.
+"""Write gca-rs/tests/t5_input_fixtures.json and t5_type_fixtures.json: what
+t5_format.py, prepare.py and prepare_type.py make of held-out commits and of
+edge cases, for the Rust port (gca-rs/src/t5draft/input.rs) to reproduce
+exactly.
 
-    python draft_model/gen_fixtures.py [--n 40] [--n-history 30] [--out FILE]
+    python draft_model/gen_fixtures.py [--n 40] [--n-history 30] [--out FILE] [--type-out FILE]
 
 --n and --n-history are the numbers of real commits for the two kinds of
-case; a larger --out file checks the port more thoroughly once
-(GCA_T5_FIXTURES=FILE cargo test t5draft).
+case; larger files check the port more thoroughly once
+(GCA_T5_FIXTURES=FILE GCA_T5_TYPE_FIXTURES=FILE2 cargo test --features t5 t5draft).
 """
 import argparse
 import json
@@ -21,6 +22,7 @@ sys.path[:0] = [str(ROOT), str(ROOT / "eval"), str(HERE)]
 from dedupe import iter_rows  # noqa: E402
 from history_sim import scope_of  # noqa: E402
 from prepare import Timelines  # noqa: E402
+from prepare_type import AnyTypeTimelines, type_input  # noqa: E402
 from t5_format import t5_input  # noqa: E402
 
 # Real diffs are cut here to keep the file small; the cases are about the rules.
@@ -74,6 +76,7 @@ def main():
     ap.add_argument("--n", type=int, default=40)
     ap.add_argument("--n-history", type=int, default=30)
     ap.add_argument("--out", default=str(ROOT / "gca-rs/tests/t5_input_fixtures.json"))
+    ap.add_argument("--type-out", default=str(ROOT / "gca-rs/tests/t5_type_fixtures.json"))
     args = ap.parse_args()
     data = Path(args.datasets)
     paths = [data / "test_unseen_older.jsonl", data / "test_unseen_recent.jsonl"]
@@ -134,6 +137,64 @@ def main():
         f.write("\n")
     picked = sum(len(c["expected"]) for c in hist_cases)
     print(f"{len(fmt)} format cases, {len(hist_cases)} history cases ({picked} picks) -> {args.out}")
+    type_cases(args, paths, rows, lines)
+
+
+def history_case(timelines, repo, sha, lines, rng):
+    """A log of up to LOG_DEPTH earlier commits (newest first, with untyped
+    ones mixed in, which the port must skip) and the commit's own files and
+    author; None if the commit cannot be a case."""
+    if repo not in timelines.repos or sha not in timelines.repos[repo][1]:
+        return None
+    commits, position = timelines.repos[repo][:2]
+    i = position[sha]
+    window = commits[max(0, i - LOG_DEPTH):i][::-1]  # newest first
+    if not window:
+        return None
+    me = commits[i]
+    if max(len(c[4]) for c in window + [me]) > MAX_CASE_FILES:
+        return None
+    log = [{"author": c[5], "subject": lines[c[1]], "files": sorted(c[4])} for c in window]
+    for k in range(0, len(log) + 1, 6):
+        log.insert(k, {"author": rng.choice([me[5], "Someone Else"]), "subject": rng.choice(UNTYPED),
+                       "files": sorted(me[4])[:2]})
+    return {"author": me[5], "staged": sorted(me[4]), "log": log}
+
+
+def type_cases(args, paths, rows, lines):
+    """The type model's cases: its input layout and its history picks."""
+    rng = random.Random(2)
+    timelines = AnyTypeTimelines(paths)
+    fmt = [{"diff": diff, "history": hist, "expected": type_input(diff, hist)}
+           for diff in EDGE_DIFFS for hist in EDGE_HISTORIES]
+    real = 0
+    for r in rng.sample(rows, min(len(rows), args.n * 3)):
+        if real >= args.n:
+            break
+        diff = str(r["diff_text"])[:MAX_DIFF]
+        hist = timelines.history(r.get("repo"), r.get("sha"))
+        case = {"diff": diff, "history": hist, "expected": type_input(diff, hist)}
+        if ascii_safe(json.dumps(case, ensure_ascii=False)):
+            fmt.append(case)
+            real += 1
+    hist_cases = []
+    for r in rng.sample(rows, len(rows)):
+        if len(hist_cases) >= args.n_history:
+            break
+        repo, sha = r.get("repo"), r.get("sha")
+        case = history_case(timelines, repo, sha, lines, rng)
+        if case is None:
+            continue
+        commits = timelines.repos[repo][0]
+        case["expected"] = [commits[j][3] for j in timelines.picks(repo, sha, depth=LOG_DEPTH)]
+        if ascii_safe(json.dumps(case, ensure_ascii=False)):
+            hist_cases.append(case)
+    with open(args.type_out, "w", encoding="utf-8") as f:
+        json.dump({"format": fmt, "history": hist_cases}, f, ensure_ascii=True, indent=0)
+        f.write("\n")
+    picked = sum(len(c["expected"]) for c in hist_cases)
+    print(f"type model: {len(fmt)} format cases, {len(hist_cases)} history cases ({picked} picks) "
+          f"-> {args.type_out}")
 
 
 if __name__ == "__main__":

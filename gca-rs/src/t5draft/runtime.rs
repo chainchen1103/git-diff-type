@@ -1,5 +1,7 @@
-//! Runs the subject model on the CPU with candle: a T5 encoder-decoder
-//! (CodeT5-small) read from one GGUF file that also holds its tokenizer.
+//! Runs the models on the CPU with candle: the subject model, a T5
+//! encoder-decoder (CodeT5-small), and the type model, the same encoder
+//! with a linear layer over its averaged states. Each is read from one GGUF
+//! file that also holds its tokenizer.
 //! The file keeps the matrices in 8-bit blocks (67 MB); they are expanded to
 //! 32-bit floats when loaded (240 MB of memory), because candle multiplies
 //! 8-bit blocks quickly only when built for AVX2, and even then the encoder
@@ -34,6 +36,11 @@ const TOKENIZER_KEY: &str = "tokenizer.huggingface.json";
 /// a model made for another layout.
 const FORMAT_KEY: &str = "gca.draft.input_format";
 const INPUT_FORMAT: u32 = 1;
+/// The type model's input layout (input::type_format) and its types, in the
+/// order of its outputs.
+const TYPE_FORMAT_KEY: &str = "gca.type.input_format";
+const TYPE_INPUT_FORMAT: u32 = 1;
+const TYPES_KEY: &str = "gca.type.classes";
 
 struct Config {
     d_model: usize,
@@ -71,14 +78,20 @@ struct DecoderLayer {
     wo: Linear,
 }
 
+/// A T5 encoder: its layers, its relative position biases (shared by the
+/// layers) and its final norm.
+struct Encoder {
+    layers: Vec<EncoderLayer>,
+    bias: Tensor,
+    norm: Tensor,
+}
+
 /// The subject model and its tokenizer.
 pub struct Drafter {
     cfg: Config,
     shared: Tensor,
     lm_head: Linear,
-    encoder: Vec<EncoderLayer>,
-    encoder_bias: Tensor,
-    encoder_norm: Tensor,
+    encoder: Encoder,
     decoder: Vec<DecoderLayer>,
     decoder_bias: Tensor,
     decoder_norm: Tensor,
@@ -115,6 +128,124 @@ impl Weights<'_> {
             o: self.matmul(&format!("{prefix}.o.weight"))?,
         })
     }
+
+    fn encoder(&mut self, layers: usize) -> Result<Encoder> {
+        let mut blocks = Vec::with_capacity(layers);
+        for i in 0..layers {
+            let p = format!("encoder.block.{i}.layer");
+            blocks.push(EncoderLayer {
+                norm: self.float(&format!("{p}.0.layer_norm.weight"))?,
+                attn: self.attention(&format!("{p}.0.SelfAttention"))?,
+                ff_norm: self.float(&format!("{p}.1.layer_norm.weight"))?,
+                wi: self.matmul(&format!("{p}.1.DenseReluDense.wi.weight"))?,
+                wo: self.matmul(&format!("{p}.1.DenseReluDense.wo.weight"))?,
+            });
+        }
+        Ok(Encoder {
+            layers: blocks,
+            bias: self
+                .float("encoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight")?,
+            norm: self.float("encoder.final_layer_norm.weight")?,
+        })
+    }
+}
+
+/// Opens a model file and checks that it is of the kind wanted: its input
+/// layout, under `format_key`, must be `format`.
+fn open(
+    path: &Path,
+    format_key: &str,
+    format: u32,
+    kind: &str,
+) -> Result<(gguf_file::Content, std::fs::File)> {
+    let mut file =
+        std::fs::File::open(path).with_context(|| format!("could not open {}", path.display()))?;
+    let content = gguf_file::Content::read(&mut file)
+        .map_err(|e| anyhow!("{} is not a model file gca can read: {e}", path.display()))?;
+    if !content.metadata.contains_key(format_key) {
+        bail!("{} is not a {kind} model file", path.display());
+    }
+    let found = meta_u32(&content, format_key)?;
+    if found != format {
+        bail!(
+            "{} was made for another version of gca (input format {found})",
+            path.display()
+        );
+    }
+    Ok((content, file))
+}
+
+fn read_config(content: &gguf_file::Content) -> Result<Config> {
+    let u = |key: &str| meta_u32(content, &format!("t5.{key}")).map(|v| v as usize);
+    Ok(Config {
+        d_model: u("d_model")?,
+        d_kv: u("d_kv")?,
+        num_heads: u("num_heads")?,
+        buckets: u("relative_attention_num_buckets")?,
+        max_distance: u("relative_attention_max_distance")?,
+        eps: content
+            .metadata
+            .get("t5.layer_norm_epsilon")
+            .ok_or_else(|| anyhow!("the model file lacks t5.layer_norm_epsilon"))?
+            .to_f32()
+            .map_err(|e| anyhow!("t5.layer_norm_epsilon: {e}"))? as f64,
+        decoder_start: u("decoder_start_token_id")? as u32,
+        eos: u("eos_token_id")? as u32,
+    })
+}
+
+/// The tokenizer stored in the model file, cutting inputs to what the
+/// encoder reads.
+fn read_tokenizer(content: &gguf_file::Content) -> Result<Tokenizer> {
+    let json = content
+        .metadata
+        .get(TOKENIZER_KEY)
+        .ok_or_else(|| anyhow!("the model file has no tokenizer"))?
+        .to_string()
+        .map_err(|e| anyhow!("{TOKENIZER_KEY}: {e}"))?;
+    let mut tokenizer: Tokenizer = json
+        .parse()
+        .map_err(|e| anyhow!("the model's tokenizer is invalid: {e}"))?;
+    tokenizer
+        .with_truncation(Some(TruncationParams {
+            max_length: MAX_INPUT_TOKENS,
+            strategy: TruncationStrategy::LongestFirst,
+            stride: 0,
+            direction: TruncationDirection::Right,
+        }))
+        .map_err(|e| anyhow!("{e}"))?;
+    tokenizer.with_padding(None);
+    Ok(tokenizer)
+}
+
+fn tokenize(tokenizer: &Tokenizer, input: &str) -> Result<Vec<u32>> {
+    let enc = tokenizer
+        .encode(input, true)
+        .map_err(|e| anyhow!("could not tokenize: {e}"))?;
+    Ok(enc.get_ids().to_vec())
+}
+
+impl Encoder {
+    /// The encoder's states, (len, d_model), for the embedded input.
+    fn forward(&self, cfg: &Config, mut x: Tensor, device: &Device) -> Result<Tensor> {
+        let len = x.dim(0)?;
+        let buckets: Vec<u32> = (0..len)
+            .flat_map(|i| (0..len).map(move |j| (i, j)))
+            .map(|(i, j)| bucket(j as i64 - i as i64, true, cfg.buckets, cfg.max_distance))
+            .collect();
+        let bias = position_bias(&self.bias, buckets, len, len, cfg.num_heads, device)?;
+        for l in &self.layers {
+            let h = rms_norm(&x, &l.norm, cfg.eps)?;
+            let q = heads(cfg, &l.attn.q.forward(&h)?)?;
+            let k = heads(cfg, &l.attn.k.forward(&h)?)?;
+            let v = heads(cfg, &l.attn.v.forward(&h)?)?;
+            let a = attend(&q, &k, &v, Some(&bias))?;
+            x = (x + l.attn.o.forward(&merge(&a)?)?)?;
+            let h = rms_norm(&x, &l.ff_norm, cfg.eps)?;
+            x = (x + l.wo.forward(&l.wi.forward(&h)?.relu()?)?)?;
+        }
+        rms_norm(&x, &self.norm, cfg.eps)
+    }
 }
 
 fn meta_u32(content: &gguf_file::Content, key: &str) -> Result<u32> {
@@ -130,52 +261,11 @@ impl Drafter {
     /// Reads the model file written by [`convert`].
     pub fn load(path: &Path) -> Result<Self> {
         let device = Device::Cpu;
-        let mut file = std::fs::File::open(path)
-            .with_context(|| format!("could not open {}", path.display()))?;
-        let content = gguf_file::Content::read(&mut file)
-            .map_err(|e| anyhow!("{} is not a model file gca can read: {e}", path.display()))?;
-        let format = meta_u32(&content, FORMAT_KEY)?;
-        if format != INPUT_FORMAT {
-            bail!(
-                "{} was made for another version of gca (input format {format})",
-                path.display()
-            );
-        }
+        let (content, file) = open(path, FORMAT_KEY, INPUT_FORMAT, "subject")?;
+        let cfg = read_config(&content)?;
         let u = |key: &str| meta_u32(&content, &format!("t5.{key}")).map(|v| v as usize);
-        let cfg = Config {
-            d_model: u("d_model")?,
-            d_kv: u("d_kv")?,
-            num_heads: u("num_heads")?,
-            buckets: u("relative_attention_num_buckets")?,
-            max_distance: u("relative_attention_max_distance")?,
-            eps: content
-                .metadata
-                .get("t5.layer_norm_epsilon")
-                .ok_or_else(|| anyhow!("the model file lacks t5.layer_norm_epsilon"))?
-                .to_f32()
-                .map_err(|e| anyhow!("t5.layer_norm_epsilon: {e}"))? as f64,
-            decoder_start: u("decoder_start_token_id")? as u32,
-            eos: u("eos_token_id")? as u32,
-        };
         let (layers, decoder_layers) = (u("num_layers")?, u("num_decoder_layers")?);
-        let json = content
-            .metadata
-            .get(TOKENIZER_KEY)
-            .ok_or_else(|| anyhow!("the model file has no tokenizer"))?
-            .to_string()
-            .map_err(|e| anyhow!("{TOKENIZER_KEY}: {e}"))?;
-        let mut tokenizer: Tokenizer = json
-            .parse()
-            .map_err(|e| anyhow!("the model's tokenizer is invalid: {e}"))?;
-        tokenizer
-            .with_truncation(Some(TruncationParams {
-                max_length: MAX_INPUT_TOKENS,
-                strategy: TruncationStrategy::LongestFirst,
-                stride: 0,
-                direction: TruncationDirection::Right,
-            }))
-            .map_err(|e| anyhow!("{e}"))?;
-        tokenizer.with_padding(None);
+        let tokenizer = read_tokenizer(&content)?;
 
         let mut w = Weights {
             content: &content,
@@ -184,17 +274,7 @@ impl Drafter {
         };
         let shared = w.float("shared.weight")?;
         let lm_head = Linear::new(shared.clone(), None);
-        let mut encoder = Vec::with_capacity(layers);
-        for i in 0..layers {
-            let p = format!("encoder.block.{i}.layer");
-            encoder.push(EncoderLayer {
-                norm: w.float(&format!("{p}.0.layer_norm.weight"))?,
-                attn: w.attention(&format!("{p}.0.SelfAttention"))?,
-                ff_norm: w.float(&format!("{p}.1.layer_norm.weight"))?,
-                wi: w.matmul(&format!("{p}.1.DenseReluDense.wi.weight"))?,
-                wo: w.matmul(&format!("{p}.1.DenseReluDense.wo.weight"))?,
-            });
-        }
+        let encoder = w.encoder(layers)?;
         let mut decoder = Vec::with_capacity(decoder_layers);
         for i in 0..decoder_layers {
             let p = format!("decoder.block.{i}.layer");
@@ -209,9 +289,6 @@ impl Drafter {
             });
         }
         Ok(Drafter {
-            encoder_bias: w
-                .float("encoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight")?,
-            encoder_norm: w.float("encoder.final_layer_norm.weight")?,
             decoder_bias: w
                 .float("decoder.block.0.layer.0.SelfAttention.relative_attention_bias.weight")?,
             decoder_norm: w.float("decoder.final_layer_norm.weight")?,
@@ -227,11 +304,7 @@ impl Drafter {
 
     /// The input's token ids, cut to what the encoder reads.
     pub fn tokens(&self, input: &str) -> Result<Vec<u32>> {
-        let enc = self
-            .tokenizer
-            .encode(input, true)
-            .map_err(|e| anyhow!("could not tokenize: {e}"))?;
-        Ok(enc.get_ids().to_vec())
+        tokenize(&self.tokenizer, input)
     }
 
     /// The subject for a model input (see [`super::input::format`]), by
@@ -293,40 +366,13 @@ impl Drafter {
         })
     }
 
-    /// (len, d_model) -> (heads, len, d_kv)
     fn heads(&self, x: &Tensor) -> Result<Tensor> {
-        let len = x.dim(0)?;
-        Ok(x.reshape((len, self.cfg.num_heads, self.cfg.d_kv))?
-            .transpose(0, 1)?
-            .contiguous()?)
+        heads(&self.cfg, x)
     }
 
     fn encode(&self, ids: &[u32]) -> Result<Tensor> {
-        let len = ids.len();
-        let mut x = self.embed(ids)?;
-        let buckets: Vec<u32> = (0..len)
-            .flat_map(|i| (0..len).map(move |j| (i, j)))
-            .map(|(i, j)| {
-                bucket(
-                    j as i64 - i as i64,
-                    true,
-                    self.cfg.buckets,
-                    self.cfg.max_distance,
-                )
-            })
-            .collect();
-        let bias = self.position_bias(&self.encoder_bias, buckets, len, len)?;
-        for l in &self.encoder {
-            let h = rms_norm(&x, &l.norm, self.cfg.eps)?;
-            let q = self.heads(&l.attn.q.forward(&h)?)?;
-            let k = self.heads(&l.attn.k.forward(&h)?)?;
-            let v = self.heads(&l.attn.v.forward(&h)?)?;
-            let a = attend(&q, &k, &v, Some(&bias))?;
-            x = (x + l.attn.o.forward(&merge(&a)?)?)?;
-            let h = rms_norm(&x, &l.ff_norm, self.cfg.eps)?;
-            x = (x + l.wo.forward(&l.wi.forward(&h)?.relu()?)?)?;
-        }
-        rms_norm(&x, &self.encoder_norm, self.cfg.eps)
+        self.encoder
+            .forward(&self.cfg, self.embed(ids)?, &self.device)
     }
 
     /// One decoder step for the token at `pos`: the logits of the next one.
@@ -342,7 +388,14 @@ impl Drafter {
                 )
             })
             .collect();
-        let bias = self.position_bias(&self.decoder_bias, buckets, 1, pos + 1)?;
+        let bias = position_bias(
+            &self.decoder_bias,
+            buckets,
+            1,
+            pos + 1,
+            self.cfg.num_heads,
+            &self.device,
+        )?;
         for (i, l) in self.decoder.iter().enumerate() {
             let h = rms_norm(&x, &l.norm, self.cfg.eps)?;
             let q = self.heads(&l.attn.q.forward(&h)?)?;
@@ -370,25 +423,125 @@ impl Drafter {
     }
 
     fn embed(&self, ids: &[u32]) -> Result<Tensor> {
-        let ids = Tensor::new(ids, &self.device)?;
-        Ok(self.shared.index_select(&ids, 0)?)
+        embed(&self.shared, ids, &self.device)
+    }
+}
+
+/// The type model and its tokenizer: the encoder's states averaged over the
+/// input's tokens, then a linear layer to the types.
+pub struct Classifier {
+    cfg: Config,
+    shared: Tensor,
+    encoder: Encoder,
+    head: Linear,
+    classes: Vec<String>,
+    tokenizer: Tokenizer,
+    device: Device,
+}
+
+impl Classifier {
+    /// Reads the model file written by [`convert_classifier`].
+    pub fn load(path: &Path) -> Result<Self> {
+        let device = Device::Cpu;
+        let (content, file) = open(path, TYPE_FORMAT_KEY, TYPE_INPUT_FORMAT, "type")?;
+        let cfg = read_config(&content)?;
+        let layers = meta_u32(&content, "t5.num_layers")? as usize;
+        let classes = content
+            .metadata
+            .get(TYPES_KEY)
+            .ok_or_else(|| anyhow!("the model file lacks {TYPES_KEY}"))?
+            .to_vec()
+            .map_err(|e| anyhow!("{TYPES_KEY}: {e}"))?
+            .iter()
+            .map(|v| {
+                v.to_string()
+                    .cloned()
+                    .map_err(|e| anyhow!("{TYPES_KEY}: {e}"))
+            })
+            .collect::<Result<Vec<String>>>()?;
+        let tokenizer = read_tokenizer(&content)?;
+        let mut w = Weights {
+            content: &content,
+            file,
+            device: &device,
+        };
+        let shared = w.float("shared.weight")?;
+        let encoder = w.encoder(layers)?;
+        let head = Linear::new(w.float("head.weight")?, Some(w.float("head.bias")?));
+        if head.weight().dim(0)? != classes.len() {
+            bail!("the model file's types do not match its output layer");
+        }
+        Ok(Classifier {
+            cfg,
+            shared,
+            encoder,
+            head,
+            classes,
+            tokenizer,
+            device,
+        })
     }
 
-    /// (heads, q_len, k_len) biases for the given buckets, in row order.
-    fn position_bias(
-        &self,
-        table: &Tensor,
-        buckets: Vec<u32>,
-        q_len: usize,
-        k_len: usize,
-    ) -> Result<Tensor> {
-        let idx = Tensor::from_vec(buckets, q_len * k_len, &self.device)?;
-        Ok(table
-            .index_select(&idx, 0)?
-            .reshape((q_len, k_len, self.cfg.num_heads))?
-            .permute((2, 0, 1))?
-            .contiguous()?)
+    /// The types, in the order of [`Classifier::probabilities`].
+    pub fn classes(&self) -> &[String] {
+        &self.classes
     }
+
+    /// The input's token ids, cut to what the encoder reads.
+    pub fn tokens(&self, input: &str) -> Result<Vec<u32>> {
+        tokenize(&self.tokenizer, input)
+    }
+
+    /// The probability of each type for a model input (see
+    /// [`super::input::type_format`]).
+    pub fn probabilities(&self, input: &str) -> Result<Vec<f64>> {
+        self.probabilities_of(&self.tokens(input)?)
+    }
+
+    /// The probability of each type for the input's token ids.
+    pub fn probabilities_of(&self, ids: &[u32]) -> Result<Vec<f64>> {
+        let states = self.encoder.forward(
+            &self.cfg,
+            embed(&self.shared, ids, &self.device)?,
+            &self.device,
+        )?;
+        let pooled = states.mean_keepdim(0)?;
+        let logits: Vec<f32> = self.head.forward(&pooled)?.squeeze(0)?.to_vec1()?;
+        let top = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max) as f64;
+        let exp: Vec<f64> = logits.iter().map(|&v| (v as f64 - top).exp()).collect();
+        let sum: f64 = exp.iter().sum();
+        Ok(exp.into_iter().map(|v| v / sum).collect())
+    }
+}
+
+fn embed(shared: &Tensor, ids: &[u32], device: &Device) -> Result<Tensor> {
+    let ids = Tensor::new(ids, device)?;
+    Ok(shared.index_select(&ids, 0)?)
+}
+
+/// (len, d_model) -> (heads, len, d_kv)
+fn heads(cfg: &Config, x: &Tensor) -> Result<Tensor> {
+    let len = x.dim(0)?;
+    Ok(x.reshape((len, cfg.num_heads, cfg.d_kv))?
+        .transpose(0, 1)?
+        .contiguous()?)
+}
+
+/// (heads, q_len, k_len) biases for the given buckets, in row order.
+fn position_bias(
+    table: &Tensor,
+    buckets: Vec<u32>,
+    q_len: usize,
+    k_len: usize,
+    num_heads: usize,
+    device: &Device,
+) -> Result<Tensor> {
+    let idx = Tensor::from_vec(buckets, q_len * k_len, device)?;
+    Ok(table
+        .index_select(&idx, 0)?
+        .reshape((q_len, k_len, num_heads))?
+        .permute((2, 0, 1))?
+        .contiguous()?)
 }
 
 /// What greedy decoding wrote.
@@ -464,6 +617,83 @@ pub struct Converted {
 /// matrices in 8-bit blocks (Q8_0) if `quantize`, the rest in 32-bit floats,
 /// and the configuration and tokenizer as metadata.
 pub fn convert(checkpoint: &Path, out: &Path, quantize: bool) -> Result<Converted> {
+    let (config, mut metadata) = checkpoint_metadata(checkpoint)?;
+    metadata.insert(1, (FORMAT_KEY.into(), gguf_file::Value::U32(INPUT_FORMAT)));
+    if config["tie_word_embeddings"] == false {
+        bail!("only T5 models with tied embeddings are supported");
+    }
+    let tensors: HashMap<String, Tensor> =
+        candle_core::safetensors::load(checkpoint.join("model.safetensors"), &Device::Cpu)?;
+    let tensors: Vec<(String, Tensor)> = tensors
+        .into_iter()
+        .filter(|(n, _)| n != "lm_head.weight")
+        .collect();
+    write_gguf(out, &metadata, tensors, quantize)
+}
+
+/// Writes a type model checkpoint (train_type.py's folder: the encoder as a
+/// transformers T5EncoderModel, head.pt with the output layer and types.json)
+/// as one GGUF file, as [`convert`] does; the output layer stays in 32-bit
+/// floats.
+pub fn convert_classifier(checkpoint: &Path, out: &Path, quantize: bool) -> Result<Converted> {
+    let (_, mut metadata) = checkpoint_metadata(checkpoint)?;
+    let types: Vec<String> = serde_json::from_str(
+        &std::fs::read_to_string(checkpoint.join("types.json")).with_context(|| {
+            format!("could not read {}", checkpoint.join("types.json").display())
+        })?,
+    )
+    .context("types.json is not a list of types")?;
+    metadata.insert(
+        1,
+        (
+            TYPE_FORMAT_KEY.into(),
+            gguf_file::Value::U32(TYPE_INPUT_FORMAT),
+        ),
+    );
+    metadata.push((
+        TYPES_KEY.into(),
+        gguf_file::Value::Array(
+            types
+                .iter()
+                .cloned()
+                .map(gguf_file::Value::String)
+                .collect(),
+        ),
+    ));
+    let encoder: HashMap<String, Tensor> =
+        candle_core::safetensors::load(checkpoint.join("model.safetensors"), &Device::Cpu)?;
+    // the input embedding is `shared`; a separate copy of it may be saved too
+    let mut tensors: Vec<(String, Tensor)> = encoder
+        .into_iter()
+        .filter(|(n, _)| n != "encoder.embed_tokens.weight")
+        .collect();
+    let head = candle_core::pickle::read_all(checkpoint.join("head.pt"))
+        .with_context(|| format!("could not read {}", checkpoint.join("head.pt").display()))?;
+    for (name, t) in head {
+        tensors.push((format!("head.{name}"), t));
+    }
+    let names: Vec<&str> = tensors.iter().map(|(n, _)| n.as_str()).collect();
+    for wanted in ["shared.weight", "head.weight", "head.bias"] {
+        if !names.contains(&wanted) {
+            bail!("the checkpoint lacks {wanted}");
+        }
+    }
+    let rows = tensors
+        .iter()
+        .find(|(n, _)| n == "head.weight")
+        .map(|(_, t)| t.dim(0))
+        .transpose()?;
+    if rows != Some(types.len()) {
+        bail!("types.json does not match the output layer");
+    }
+    write_gguf(out, &metadata, tensors, quantize)
+}
+
+/// config.json and the metadata both kinds of model file carry: the
+/// architecture, the tokenizer and the T5 configuration.
+fn checkpoint_metadata(
+    checkpoint: &Path,
+) -> Result<(serde_json::Value, Vec<(String, gguf_file::Value)>)> {
     let read = |name: &str| {
         std::fs::read_to_string(checkpoint.join(name))
             .with_context(|| format!("could not read {}", checkpoint.join(name).display()))
@@ -473,11 +703,8 @@ pub fn convert(checkpoint: &Path, out: &Path, quantize: bool) -> Result<Converte
     tokenizer
         .parse::<Tokenizer>()
         .map_err(|e| anyhow!("tokenizer.json is invalid: {e}"))?;
-    if config["model_type"] != "t5"
-        || config["feed_forward_proj"] != "relu"
-        || config["tie_word_embeddings"] == false
-    {
-        bail!("only T5 models with ReLU feed-forward layers and tied embeddings are supported");
+    if config["model_type"] != "t5" || config["feed_forward_proj"] != "relu" {
+        bail!("only T5 models with ReLU feed-forward layers are supported");
     }
     let num = |key: &str| -> Result<u32> {
         config[key]
@@ -490,7 +717,6 @@ pub fn convert(checkpoint: &Path, out: &Path, quantize: bool) -> Result<Converte
             "general.architecture".into(),
             gguf_file::Value::String("t5".into()),
         ),
-        (FORMAT_KEY.into(), gguf_file::Value::U32(INPUT_FORMAT)),
         (TOKENIZER_KEY.into(), gguf_file::Value::String(tokenizer)),
         (
             "t5.layer_norm_epsilon".into(),
@@ -513,18 +739,28 @@ pub fn convert(checkpoint: &Path, out: &Path, quantize: bool) -> Result<Converte
     ] {
         metadata.push((format!("t5.{key}"), gguf_file::Value::U32(num(key)?)));
     }
-    let tensors: HashMap<String, Tensor> =
-        candle_core::safetensors::load(checkpoint.join("model.safetensors"), &Device::Cpu)?;
-    let mut names: Vec<&String> = tensors
-        .keys()
-        .filter(|n| n.as_str() != "lm_head.weight")
-        .collect();
-    names.sort();
+    Ok((config, metadata))
+}
+
+/// Writes the tensors, sorted by name, and the metadata as a GGUF file: the
+/// matrices whose rows fill whole 8-bit blocks as Q8_0 if `quantize`
+/// (except the type model's output layer), the rest as 32-bit floats.
+fn write_gguf(
+    out: &Path,
+    metadata: &[(String, gguf_file::Value)],
+    mut tensors: Vec<(String, Tensor)>,
+    quantize: bool,
+) -> Result<Converted> {
+    tensors.sort_by(|a, b| a.0.cmp(&b.0));
     let mut quantized = 0;
-    let mut qtensors = Vec::with_capacity(names.len());
-    for name in &names {
-        let t = tensors[*name].to_dtype(DType::F32)?;
-        let q = if quantize && t.rank() == 2 && t.dim(1)? % GgmlDType::Q8_0.block_size() == 0 {
+    let mut qtensors = Vec::with_capacity(tensors.len());
+    for (name, t) in &tensors {
+        let t = t.to_dtype(DType::F32)?;
+        let q = if quantize
+            && !name.starts_with("head.")
+            && t.rank() == 2
+            && t.dim(1)? % GgmlDType::Q8_0.block_size() == 0
+        {
             quantized += 1;
             QTensor::quantize(&t, GgmlDType::Q8_0)?
         } else {
@@ -536,14 +772,14 @@ pub fn convert(checkpoint: &Path, out: &Path, quantize: bool) -> Result<Converte
         .with_context(|| format!("could not create {}", out.display()))?;
     let meta: Vec<(&str, &gguf_file::Value)> =
         metadata.iter().map(|(k, v)| (k.as_str(), v)).collect();
-    let refs: Vec<(&str, &QTensor)> = names
+    let refs: Vec<(&str, &QTensor)> = tensors
         .iter()
-        .map(|n| n.as_str())
+        .map(|(n, _)| n.as_str())
         .zip(qtensors.iter())
         .collect();
     gguf_file::write(&mut file, &meta, &refs)?;
     Ok(Converted {
-        tensors: names.len(),
+        tensors: tensors.len(),
         quantized,
         bytes: std::fs::metadata(out)?.len(),
     })

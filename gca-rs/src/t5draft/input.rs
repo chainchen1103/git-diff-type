@@ -1,7 +1,9 @@
-//! What the subject model reads, exactly as the training data had it
-//! (draft_model/t5_format.py and draft_model/prepare.py): the type and scope
-//! chosen before the subject, the files, the headers of a few earlier
+//! What the models read, exactly as their training data had it. The subject
+//! model (draft_model/t5_format.py and draft_model/prepare.py): the type and
+//! scope chosen before the subject, the files, the headers of a few earlier
 //! commits, and the changed lines, cut to fit the model's 512-token input.
+//! The type model (draft_model/prepare_type.py): the same without the type
+//! and scope, and the earlier commits picked without knowing the type.
 
 use regex::Regex;
 use std::collections::HashSet;
@@ -133,21 +135,19 @@ pub fn format(diff: &str, kind: &str, scope: Option<&str>, history: &[String]) -
     take_chars(&text, MAX_CHARS).to_string()
 }
 
-/// The headers of up to four earlier commits for the model's input, picked
-/// from the recent log (newest first) as the training data picked them: up
-/// to three that touched a staged file (the same type first, then the
-/// larger overlap of files, then the newer), the newest of the same type if
-/// fewer than three did, and your own newest commit if not picked already.
-/// Only commits with a Conventional Commit type count.
-pub fn history(log: &[LogEntry], staged: &[String], kind: &str, me: Option<&str>) -> Vec<String> {
-    struct Typed<'a> {
-        kind: &'a str,
-        header: String,
-        files: HashSet<&'a str>,
-        author: &'a str,
-    }
-    let typed: Vec<Typed> = log
-        .iter()
+/// An earlier commit with a Conventional Commit type, as the history lines
+/// show it.
+struct Typed<'a> {
+    kind: &'a str,
+    header: String,
+    files: HashSet<&'a str>,
+    author: &'a str,
+}
+
+/// The typed commits of the recent log, newest first, with their headers
+/// as the training data wrote them (`type(scope): subject`).
+fn typed(log: &[LogEntry]) -> Vec<Typed<'_>> {
+    log.iter()
         .filter_map(|e| {
             let kind = LABEL.captures(&e.subject)?.get(1)?.as_str();
             let scope = message::parse_subject(&e.subject).and_then(|(_, scope)| scope);
@@ -165,21 +165,47 @@ pub fn history(log: &[LogEntry], staged: &[String], kind: &str, me: Option<&str>
                 author: &e.author,
             })
         })
-        .collect();
-    let mine: HashSet<&str> = staged.iter().map(String::as_str).collect();
+        .collect()
+}
 
-    // (same type, overlap, index): the index is the age, 0 the newest
-    let mut sharing: Vec<(bool, f64, usize)> = typed
+/// (same type, overlap, index) for each typed commit that touched a staged
+/// file; the overlap is shared files over all their files, and the index
+/// the age, 0 the newest.
+fn sharing(typed: &[Typed], staged: &[String], kind: Option<&str>) -> Vec<(bool, f64, usize)> {
+    let mine: HashSet<&str> = staged.iter().map(String::as_str).collect();
+    typed
         .iter()
         .enumerate()
         .filter_map(|(i, c)| {
             let shared = c.files.iter().filter(|f| mine.contains(*f)).count();
             (shared > 0).then(|| {
                 let union = mine.len() + c.files.len() - shared;
-                (c.kind == kind, shared as f64 / union as f64, i)
+                (Some(c.kind) == kind, shared as f64 / union as f64, i)
             })
         })
-        .collect();
+        .collect()
+}
+
+/// Adds your own newest typed commit to the picks, unless it is there.
+fn add_own(typed: &[Typed], picked: &mut Vec<usize>, me: Option<&str>) {
+    if let Some(me) = me {
+        if let Some(i) = typed.iter().position(|c| same_person(c.author, me)) {
+            if !picked.contains(&i) {
+                picked.push(i);
+            }
+        }
+    }
+}
+
+/// The headers of up to four earlier commits for the model's input, picked
+/// from the recent log (newest first) as the training data picked them: up
+/// to three that touched a staged file (the same type first, then the
+/// larger overlap of files, then the newer), the newest of the same type if
+/// fewer than three did, and your own newest commit if not picked already.
+/// Only commits with a Conventional Commit type count.
+pub fn history(log: &[LogEntry], staged: &[String], kind: &str, me: Option<&str>) -> Vec<String> {
+    let typed = typed(log);
+    let mut sharing = sharing(&typed, staged, Some(kind));
     sharing.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.total_cmp(&a.1)).then(a.2.cmp(&b.2)));
     let mut picked: Vec<usize> = sharing.iter().take(BY_FILES).map(|s| s.2).collect();
     if picked.len() < BY_FILES {
@@ -192,17 +218,45 @@ pub fn history(log: &[LogEntry], staged: &[String], kind: &str, me: Option<&str>
             }
         }
     }
-    if let Some(me) = me {
-        if let Some(i) = typed.iter().position(|c| same_person(c.author, me)) {
-            if !picked.contains(&i) {
-                picked.push(i);
-            }
-        }
-    }
+    add_own(&typed, &mut picked, me);
     picked
         .into_iter()
         .map(|i| typed[i].header.clone())
         .collect()
+}
+
+/// The history lines for the type model, picked before the type is known,
+/// as draft_model/prepare_type.py picked them: up to three commits that
+/// touched a staged file (the larger overlap of files first, then the
+/// newer), the newest commits of any type if fewer than three did, and your
+/// own newest commit if not picked already.
+#[cfg_attr(not(feature = "t5"), allow(dead_code))]
+pub fn type_history(log: &[LogEntry], staged: &[String], me: Option<&str>) -> Vec<String> {
+    let typed = typed(log);
+    let mut sharing = sharing(&typed, staged, None);
+    sharing.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.2.cmp(&b.2)));
+    let mut picked: Vec<usize> = sharing.iter().take(BY_FILES).map(|s| s.2).collect();
+    for i in 0..typed.len() {
+        if picked.len() >= BY_FILES {
+            break;
+        }
+        if !picked.contains(&i) {
+            picked.push(i);
+        }
+    }
+    add_own(&typed, &mut picked, me);
+    picked
+        .into_iter()
+        .map(|i| typed[i].header.clone())
+        .collect()
+}
+
+/// The type model's input: [`format`]'s layout without the type and scope
+/// lines, which are what it tells.
+#[cfg_attr(not(feature = "t5"), allow(dead_code))]
+pub fn type_format(diff: &str, history: &[String]) -> String {
+    let text = format(diff, "x", None, history);
+    text.splitn(3, '\n').nth(2).unwrap_or_default().to_string()
 }
 
 /// How many of the typed commits in the recent log have this subject,
@@ -358,6 +412,60 @@ mod tests {
         assert_eq!(history(&spaced, &staged, "fix", None), ["fix: two spaces"]);
     }
 
+    #[test]
+    fn picks_type_model_history_without_the_type() {
+        let log = [
+            entry("Bo <bo@x>", "docs: newest, other files", &["README.md"]),
+            entry("Bo <bo@x>", "feat(cli): all of the files", &["src/cli.rs"]),
+            entry("Ada <ada@x>", "WIP untyped", &["src/cli.rs"]),
+            entry(
+                "Bo <bo@x>",
+                "fix(cli): half the files",
+                &["src/cli.rs", "src/x.rs"],
+            ),
+            entry("Bo <bo@x>", "test: older, other files", &["tests/a.rs"]),
+            entry(
+                "Ada <ada@x>",
+                "chore: my newest typed commit",
+                &["Cargo.lock"],
+            ),
+        ];
+        let staged = vec!["src/cli.rs".to_string()];
+        // the larger overlap first whatever the type, then the newest of any type
+        assert_eq!(
+            type_history(&log, &staged, Some("Ada <ada@x>")),
+            [
+                "feat(cli): all of the files",
+                "fix(cli): half the files",
+                "docs: newest, other files",
+                "chore: my newest typed commit",
+            ]
+        );
+        assert_eq!(
+            type_history(&log, &["new.rs".to_string()], None),
+            [
+                "docs: newest, other files",
+                "feat(cli): all of the files",
+                "fix(cli): half the files"
+            ]
+        );
+        assert!(type_history(&[], &staged, Some("Ada <ada@x>")).is_empty());
+    }
+
+    #[test]
+    fn type_input_leaves_out_type_and_scope() {
+        let diff = "diff --git a/src/a.rs b/src/a.rs\n@@ -1 +1 @@\n-old();\n+new();\n";
+        let history = ["fix: x".to_string()];
+        assert_eq!(
+            type_format(diff, &history),
+            "files: M src/a.rs\nhistory:\n- fix: x\n--- src/a.rs\n@@\n- old();\n+ new();"
+        );
+        assert_eq!(
+            format!("type: x\nscope: none\n{}", type_format(diff, &history)),
+            format(diff, "x", None, &history)
+        );
+    }
+
     #[derive(Deserialize)]
     struct FormatCase {
         diff: String,
@@ -389,18 +497,56 @@ mod tests {
         history: Vec<HistoryCase>,
     }
 
+    #[derive(Deserialize)]
+    struct TypeFormatCase {
+        diff: String,
+        history: Vec<String>,
+        expected: String,
+    }
+
+    #[derive(Deserialize)]
+    struct TypeHistoryCase {
+        author: String,
+        staged: Vec<String>,
+        log: Vec<Commit>,
+        expected: Vec<String>,
+    }
+
+    #[derive(Deserialize)]
+    struct TypeFixtures {
+        format: Vec<TypeFormatCase>,
+        history: Vec<TypeHistoryCase>,
+    }
+
+    fn fixture_path(env: &str, name: &str) -> std::path::PathBuf {
+        std::env::var_os(env).map_or_else(
+            || {
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("tests")
+                    .join(name)
+            },
+            std::path::PathBuf::from,
+        )
+    }
+
+    fn log_of(commits: &[Commit]) -> Vec<LogEntry> {
+        commits
+            .iter()
+            .map(|e| LogEntry {
+                sha: String::new(),
+                author: e.author.clone(),
+                subject: e.subject.clone(),
+                files: e.files.clone(),
+            })
+            .collect()
+    }
+
     /// Cases written by the Python code that made the training data
     /// (eval/t5/gen_t5_fixtures.py), from held-out commits.
     #[test]
     fn matches_the_training_data_code() {
         // GCA_T5_FIXTURES names a larger file from the same script, for a one-off check.
-        let path = std::env::var_os("GCA_T5_FIXTURES").map_or_else(
-            || {
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-                    .join("tests/t5_input_fixtures.json")
-            },
-            std::path::PathBuf::from,
-        );
+        let path = fixture_path("GCA_T5_FIXTURES", "t5_input_fixtures.json");
         let fx: Fixtures = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert!(fx.format.len() >= 50 && fx.history.len() >= 25);
         for (n, c) in fx.format.iter().enumerate() {
@@ -408,19 +554,33 @@ mod tests {
             assert_eq!(got, c.expected, "format case {n}");
         }
         for (n, c) in fx.history.iter().enumerate() {
-            let log: Vec<LogEntry> = c
-                .log
-                .iter()
-                .map(|e| LogEntry {
-                    sha: String::new(),
-                    author: e.author.clone(),
-                    subject: e.subject.clone(),
-                    files: e.files.clone(),
-                })
-                .collect();
             let me = (!c.author.is_empty()).then_some(c.author.as_str());
             assert_eq!(
-                history(&log, &c.staged, &c.kind, me),
+                history(&log_of(&c.log), &c.staged, &c.kind, me),
+                c.expected,
+                "history case {n}"
+            );
+        }
+    }
+
+    /// The type model's cases, from draft_model/prepare_type.py.
+    #[test]
+    fn matches_the_type_model_data_code() {
+        // GCA_T5_TYPE_FIXTURES names a larger file from the same script.
+        let path = fixture_path("GCA_T5_TYPE_FIXTURES", "t5_type_fixtures.json");
+        let fx: TypeFixtures = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert!(fx.format.len() >= 50 && fx.history.len() >= 25);
+        for (n, c) in fx.format.iter().enumerate() {
+            assert_eq!(
+                type_format(&c.diff, &c.history),
+                c.expected,
+                "format case {n}"
+            );
+        }
+        for (n, c) in fx.history.iter().enumerate() {
+            let me = (!c.author.is_empty()).then_some(c.author.as_str());
+            assert_eq!(
+                type_history(&log_of(&c.log), &c.staged, me),
                 c.expected,
                 "history case {n}"
             );

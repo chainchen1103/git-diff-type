@@ -23,6 +23,18 @@ Builds with the `t5` feature can draft subjects with a small model.
 - `draft_model/` prepares the data, trains the model on an NVIDIA GPU,
   scores it and documents the results; `gca draft-model convert` (in `t5`
   builds) writes a checkpoint as the file gca loads.
+- **Ranking the types with a model**, in the same builds, with a file set by
+  `gca config type-model <FILE>`, `--type-model` or `GCA_TYPE_MODEL`: the
+  subject model's encoder fine-tuned to tell the type from the files, the
+  headers of up to four related earlier commits and the changed lines. Its
+  probabilities and the built-in model's are averaged before the subject
+  and the history tilt them. On recent commits of projects gca never saw,
+  with the history and your own commits, the first suggestion is right
+  70.4% of the time instead of 63.8% (73.7% instead of 70.8% with the
+  subject), and the right type is in the top three 95.3% instead of 93.0%.
+  `--dry-run --json` adds `ranked_with_type_model`. The model file (40 MB)
+  is not released yet; `draft_model/` trains it (`run_type.bat`) and
+  `gca type-model convert` writes it.
 
 ## 0.5.1 (2026-10-04)
 

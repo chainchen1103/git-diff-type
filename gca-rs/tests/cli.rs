@@ -834,6 +834,118 @@ fn the_draft_model_writes_for_the_suggested_type() {
     }
 }
 
+#[cfg(feature = "t5")]
+#[test]
+fn the_type_model_setting_is_stored_and_checked() {
+    let repo = Repo::new();
+    let out = repo.gca(&["config", "type-model"]);
+    assert!(
+        stdout(&out).contains("gca.typeModel = (not set"),
+        "{}",
+        stdout(&out)
+    );
+    let out = repo.gca(&["config", "type-model", "missing.gguf"]);
+    assert_eq!(out.status.code(), Some(1));
+    assert!(stderr(&out).contains("no file at"), "{}", stderr(&out));
+
+    repo.write("models/t.gguf", "not really a model");
+    let out = repo.gca(&["config", "type-model", "models/t.gguf", "--local"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let stored = repo.git(&["config", "gca.typeModel"]);
+    assert!(Path::new(stored.trim()).is_absolute(), "{stored}");
+
+    // a file that is not a model: a warning, and the built-in model ranks alone
+    repo.write("src/lib.rs", "pub fn one() -> u32 {\n    2\n}\n");
+    repo.git(&["add", "-A"]);
+    let alone = {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_gca"));
+        repo.env(&mut cmd);
+        let out = cmd
+            .args(["--dry-run", "--json"])
+            .env("GCA_TYPE_MODEL", "")
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        // GCA_TYPE_MODEL="" turns the model off without a warning
+        assert!(out.status.success(), "{}", stderr(&out));
+        assert!(stderr(&out).is_empty(), "{}", stderr(&out));
+        json(&out)
+    };
+    let out = repo.gca(&["--dry-run", "--json"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(
+        stderr(&out).contains("could not use the type model")
+            && stderr(&out).contains("is not a model file gca can read"),
+        "{}",
+        stderr(&out)
+    );
+    let v = json(&out);
+    assert_eq!(v["ranked_with_type_model"], false, "{v}");
+    assert_eq!(v["suggestions"], alone["suggestions"]);
+
+    // "" removes the setting
+    let out = repo.gca(&["config", "type-model", "", "--local"]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let out = repo.gca(&["config", "type-model"]);
+    assert!(stdout(&out).contains("(not set"), "{}", stdout(&out));
+}
+
+/// With real model files (not in the repository; GCA_TEST_TYPE_MODEL and
+/// GCA_TEST_DRAFT_MODEL name them), the type model joins the ranking, and
+/// the subject model's file is refused as a type model.
+#[cfg(feature = "t5")]
+#[test]
+fn the_type_model_joins_the_ranking() {
+    let Some(model) = std::env::var_os("GCA_TEST_TYPE_MODEL") else {
+        eprintln!("skipped: set GCA_TEST_TYPE_MODEL to a type model file");
+        return;
+    };
+    let model = model.to_string_lossy().into_owned();
+    let repo = Repo::new();
+    repo.write("README.md", "# demo\n\nHow to build it.\n");
+    repo.git(&["add", "-A"]);
+    let alone = json(&repo.gca(&["--dry-run", "--json", "--topk", "11"]));
+    let out = repo.gca(&[
+        "--dry-run",
+        "--json",
+        "--topk",
+        "11",
+        "--type-model",
+        &model,
+    ]);
+    assert!(out.status.success(), "{}", stderr(&out));
+    assert!(stderr(&out).is_empty(), "{}", stderr(&out));
+    let v = json(&out);
+    assert_eq!(v["ranked_with_type_model"], true, "{v}");
+    let top2: Vec<&str> = v["suggestions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .take(2)
+        .map(|s| s["type"].as_str().unwrap())
+        .collect();
+    assert!(top2.contains(&"docs"), "{v}");
+    assert_ne!(v["suggestions"], alone["suggestions"]);
+    let total: f64 = v["suggestions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["probability"].as_f64().unwrap())
+        .sum();
+    assert!((total - 1.0).abs() < 1e-9, "{total}");
+
+    if let Some(draft) = std::env::var_os("GCA_TEST_DRAFT_MODEL") {
+        let draft = draft.to_string_lossy().into_owned();
+        let out = repo.gca(&["--dry-run", "--json", "--type-model", &draft]);
+        assert!(
+            stderr(&out).contains("is not a type model file"),
+            "{}",
+            stderr(&out)
+        );
+        assert_eq!(json(&out)["ranked_with_type_model"], false);
+    }
+}
+
 #[test]
 fn diff_settings_do_not_change_the_prediction() {
     let repo = Repo::new();
