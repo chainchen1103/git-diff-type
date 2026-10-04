@@ -21,4 +21,8 @@ draft_model/hf/
 draft_model/*.log
 draft_model/predictions.jsonl
 draft_model/baseline_files.json
+draft_model/type_data
+draft_model/type_runs/
+draft_model/type_predictions/
+draft_model/type_results.json
 *.gguf

@@ -1,4 +1,5 @@
-"""Shared by train_t5.py and generate_t5.py."""
+"""Shared by the subject model's scripts (train_t5.py, generate_t5.py) and
+the type model's (train_type.py, predict_type.py)."""
 import gzip
 import json
 import sys
@@ -54,10 +55,10 @@ def encode_targets(tok, texts, max_target, device):
 
 
 def latest_model(out):
-    """The newest complete checkpoint under out (see train_t5.py)."""
+    """The newest complete checkpoint under out (see save() in train_t5.py)."""
     pointer = Path(out) / "latest.txt"
     if not pointer.exists():
-        raise SystemExit(f"no trained model under {out}: run train_t5.py first")
+        raise SystemExit(f"no trained model under {out}: train one first")
     return Path(out) / pointer.read_text(encoding="utf-8").strip()
 
 

@@ -1,4 +1,7 @@
-# Subject model
+# Subject model and type model
+
+Two small models: one writes the subject (below), which gca can use in
+builds with the `t5` feature, the other tells the type ([Type model](#type-model)).
 
 A small sequence-to-sequence model that writes the subject of a Conventional
 Commit: [CodeT5-small](https://huggingface.co/Salesforce/codet5-small)
@@ -160,6 +163,74 @@ cargo run --release --features t5 -- draft-model convert ../draft_model/runs/ckp
   type prompt is open, for the type and scope it suggests, and drafts again
   if you pick others.
 
+## Type model
+
+The same network's encoder, fine-tuned to tell the type: its states,
+averaged over the input's tokens, go through one linear layer to the eleven
+types.
+
+### Data and training
+
+`prepare_type.py` writes `type_data/` from the same commits, shuffle and
+validation split as `prepare.py`: 435,905 to train on, 2,000 held back.
+The input is the subject model's without its first two lines, the type and
+the scope, which are what the model tells. The history lines are picked
+without the type, as gca can pick them before you choose one: up to three
+of the 500 earlier commits that touched a staged file (the larger overlap
+first, then the newer), the newest commits of any type if fewer than three
+did, and the author's own newest commit. Their headers carry their types,
+the project's habits as gca reads them. For the three held-out sets it
+writes every commit gca's evaluation scores, with its history from the
+commits before it.
+
+`run_type.bat` trains (`train_type.py`) and writes the predictions for the
+held-out sets (`predict_type.py`). It starts from the subject model's
+encoder (`runs/`), which has read these inputs before: one epoch, 13,623
+steps of 32 commits, AdamW at 2e-4 with 500 warm-up steps and a linear
+decay, bfloat16, about 1.6 hours and 6.1 GB of GPU memory on an RTX 4060
+Laptop. The validation accuracy, on commits of the training projects,
+rises from 65.8% at step 1,000 to 73.0%.
+
+### Results
+
+`eval_type.py` ranks each held-out commit as gca does, with the built-in
+linear model, with the type model, and with both averaged in log space,
+half each. First suggestion right · right type in the top three · average
+recall per type · average F1 per type (types with 20 commits or more):
+
+| Recent commits of the unseen projects (10,005) | Model alone | With history and own commits | With the subject | Subject, history and own commits |
+| --- | ---: | ---: | ---: | ---: |
+| Built-in model (0.5) | 45.5% · 86.5% · 44.3% · 34.6% | 63.8% · 93.0% · 56.2% · 53.7% | 61.7% · 90.8% · 51.6% · 48.9% | 70.8% · 94.9% · 60.3% · 61.2% |
+| Type model | 67.7% · 94.4% · 60.5% · 60.8% | 69.3% · 95.0% · 61.0% · 62.0% | 69.4% · 95.0% · 61.4% · 61.9% | 72.1% · 95.7% · 62.8% · 64.4% |
+| **Both** | 67.7% · 94.4% · 60.6% · 60.7% | **70.4% · 95.3% · 62.0% · 63.2%** | 70.2% · 95.1% · 61.6% · 61.7% | **73.7% · 96.1% · 63.5% · 65.4%** |
+
+| Older commits of the unseen projects (91,617) | Model alone | With history and own commits | With the subject | Subject, history and own commits |
+| --- | ---: | ---: | ---: | ---: |
+| Built-in model (0.5) | 45.9% · 84.3% · 36.9% · 27.8% | 60.8% · 92.1% · 44.6% · 44.2% | 58.1% · 88.6% · 45.8% · 40.1% | 67.9% · 94.6% · 50.5% · 51.9% |
+| Type model | 64.9% · 93.2% · 46.8% · 47.0% | 66.4% · 93.8% · 47.5% · 48.5% | 66.7% · 93.8% · 48.3% · 48.3% | 68.8% · 94.7% · 49.3% · 50.7% |
+| **Both** | 64.8% · 93.2% · 46.7% · 46.6% | **67.1% · 94.2% · 47.6% · 48.9%** | 67.2% · 93.9% · 48.8% · 48.6% | **70.2% · 95.3% · 50.1% · 51.9%** |
+
+"Model alone" is not the same input for the two: the type model reads the
+headers of related earlier commits too, the built-in model only the diff.
+
+- On the recent commits, with history and own commits, F1 rises for
+  `refactor` from 24% to 45%, `test` 58% to 81%, `build` 42% to 61%,
+  `chore` 55% to 64% and `fix` 72% to 78%. `perf` does not gain (36% and
+  35%; 47% and 38% with the subject), and on the older commits `style` and
+  `revert` drop (17% to 11%, 6% to 0%): the type model rarely puts them
+  first.
+- gca reads your own earlier commits again to see how the types you gave
+  them differ from what it would have suggested. With the type model it
+  still reads them with the built-in model alone, which saves running the
+  type model ten more times: scored that way, the first suggestion is right
+  70.4% of the time on the recent commits, against 70.5% with both models,
+  and 67.1% on the older ones either way.
+- The weights of the history are gca's own, and the type model's
+  probabilities are not corrected for how common each type is. Chosen on
+  `test_seen_recent` instead (the training projects' recent commits),
+  other weights would have gained 0.7 points without the subject and lost
+  0.2 with it on the recent commits.
+
 ## Files
 
 | File | What it does |
@@ -174,3 +245,7 @@ cargo run --release --features t5 -- draft-model convert ../draft_model/runs/ckp
 | `replay.py` | replays a repository's commits through gca (`python draft_model/replay.py GCA REPO MODEL N OUT.jsonl`); it adds and removes a temporary git worktree |
 | `baseline_files.py` | the file-overlap baseline |
 | `gen_fixtures.py` | the Rust port's test cases, `gca-rs/tests/t5_input_fixtures.json` |
+| `prepare_type.py` | builds `type_data/` for the type model from `datasets/` |
+| `run_type.bat` | trains the type model and writes its predictions (Windows, NVIDIA GPU) |
+| `train_type.py`, `predict_type.py` | fine-tunes the type model (`--resume` continues), writes `type_predictions/` |
+| `eval_type.py` | the type model's tables above |
