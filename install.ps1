@@ -12,7 +12,7 @@
 #   powershell -c "$env:GCA_UNINSTALL = 1; irm https://raw.githubusercontent.com/chainchen1103/git-diff-type/main/install.ps1 | iex"
 #
 # Settings, as environment variables:
-#   GCA_VERSION = v0.5.1     install this release instead of the latest
+#   GCA_VERSION = v0.6.0     install this release instead of the latest
 #   GCA_INSTALL_DIR = DIR    install into DIR instead of %LOCALAPPDATA%\gca
 #   GCA_NO_MODIFY_PATH = 1   leave your PATH alone
 #   GCA_DOWNLOAD_URL = URL   download from URL instead of GitHub (a mirror, or a test)

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 (2026-10-04)
 
 gca can use two small neural models besides its built-in one: one drafts
 the subject of any change, the other ranks the types with the built-in
