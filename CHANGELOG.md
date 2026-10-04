@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.5.1 (2026-10-04)
+
+gca reads the project's history faster where many files come and go, and
+prints the same probabilities on every run. The suggestions are otherwise
+those of 0.5.0.
 
 ### Changed
 
