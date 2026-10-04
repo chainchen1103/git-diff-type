@@ -189,7 +189,7 @@ hook 絕不會擋下 commit。`GCA_HOOK=0 git commit ...` 可以略過一次，`
 | `package.json`、`Cargo.toml`、`pyproject.toml`、`requirements*.txt`、`go.mod` 或 workflow 的 `uses:` 裡的依賴版本 | `bump zod from 3.22.0 to 3.23.8`、`downgrade …`、`bump vite and vitest`、`bump 12 dependencies` |
 | 新增或移除依賴 | `add tempfile dependency`、`remove 3 dependencies` |
 | 只有 lockfile | `update Cargo.lock`、`update lockfiles` |
-| 套件本身的版本，連同 lockfile 與 changelog | `release v1.1.0`，並預選 `chore` |
+| 套件本身的版本，連同 lockfile、changelog，以及只把舊版本號換成新版本號的檔案（安裝說明、版本常數） | `release v1.1.0`，並預選 `chore` |
 | 只搬移或改名、內容沒改的檔案 | `rename lib.rs to core.rs`、`move util.rs to src/core/`、`rename lib/a/ to lib/b/` |
 | 刪除檔案 | `remove scripts/old.sh`、`remove 4 files from legacy/` |
 | 新增或刪除測試、一份文件或一個 workflow 檔 | `add tests for parser`、`add install docs`、`add release workflow` |
@@ -198,9 +198,9 @@ hook 絕不會擋下 commit。`GCA_HOOK=0 git commit ...` 可以略過一次，`
 其他變更都不會有草稿，包括連同程式碼一起改的依賴升級：像「update README」這種籠統的摘要，人很少照用。
 `--dry-run` 會印出草稿，`--dry-run --json` 則放在 `subject_draft`。
 
-在[準確率](#準確率)的三組測試資料中，人寫的 commit 有 5.2% 會拿到草稿（141,213 個中的 7,402 個）：
-3,359 個依賴變更、2,146 個發版，以及 1,897 個搬移、刪除、新增檔案與錯字修正。發版的 commit，
-作者有 96.6% 選了 `chore`。草稿寫的是改了什麼，作者常寫的卻是為什麼改，只有 6.8% 的摘要與草稿一字不差，
+在[準確率](#準確率)的三組測試資料中，人寫的 commit 有 5.5% 會拿到草稿（141,213 個中的 7,755 個）：
+3,359 個依賴變更、2,499 個發版，以及 1,897 個搬移、刪除、新增檔案與錯字修正。發版的 commit，
+作者有 96.9% 選了 `chore`。草稿寫的是改了什麼，作者常寫的卻是為什麼改，只有 6.5% 的摘要與草稿一字不差，
 所以草稿只是預設值，直接打字就能換掉。
 
 ### 模型（實驗性）

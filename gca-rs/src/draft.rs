@@ -400,22 +400,31 @@ fn is_downgrade(old: &str, new: &str) -> bool {
 // ---------------------------------------------------------------- patterns
 
 /// The package's own version changed, and nothing but release bookkeeping
-/// came with it: manifests, lockfiles, changelogs, consumed changesets.
+/// came with it: manifests, lockfiles, changelogs, consumed changesets, and
+/// files where the old version only gave way to the new one, such as an
+/// install line in a README or a version constant.
 fn release(files: &[FileChange], sections: &[Section]) -> Option<Draft> {
-    let mut versions = Vec::new();
+    let mut changes = Vec::new();
+    let mut others = Vec::new();
     for f in files {
         if let Some(kind) = manifest(&f.path) {
             let m = read_manifest(kind, section(sections, &f.path)?);
             if m.other > 0 {
                 return None;
             }
-            if let Some((_, new)) = m.version {
-                versions.push(new);
+            if let Some(change) = m.version {
+                changes.push(change);
             }
         } else if !(is_lockfile(&f.path) || is_changelog(&f.path) || is_release_leftover(f)) {
+            others.push(f);
+        }
+    }
+    for f in others {
+        if f.status != 'M' || !only_swaps_versions(section(sections, &f.path)?, &changes) {
             return None;
         }
     }
+    let mut versions: Vec<&str> = changes.iter().map(|(_, new)| new.as_str()).collect();
     versions.sort();
     versions.dedup();
     let subject = match versions.as_slice() {
@@ -427,6 +436,52 @@ fn release(files: &[FileChange], sections: &[Section]) -> Option<Draft> {
         subject,
         kind: Some("chore"),
     })
+}
+
+/// Whether each changed line of this file is the line it replaces with an
+/// old version of the package swapped for the new one, line for line.
+fn only_swaps_versions(s: &Section, changes: &[(String, String)]) -> bool {
+    let swaps: Vec<(&str, &str)> = changes
+        .iter()
+        .map(|(old, new)| (bare(old), bare(new)))
+        .filter(|(old, new)| !old.is_empty() && old != new)
+        .collect();
+    !swaps.is_empty()
+        && !s.hunks.is_empty()
+        && s.hunks.iter().all(|h| {
+            !h.removed.is_empty()
+                && h.removed.len() == h.added.len()
+                && h.removed.iter().zip(&h.added).all(|(old_line, new_line)| {
+                    let swapped = swaps.iter().fold(old_line.clone(), |line, (old, new)| {
+                        swap_version(&line, old, new)
+                    });
+                    old_line != new_line && swapped == *new_line
+                })
+        })
+}
+
+/// The line with each mention of version `old` replaced by `new`, except
+/// where it is part of a longer version (`10.5.1` or `0.5.12` for `0.5.1`).
+fn swap_version(line: &str, old: &str, new: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut last = 0;
+    for (i, _) in line.match_indices(old) {
+        let before = line[..i].chars().next_back();
+        let mut after = line[i + old.len()..].chars();
+        let longer = before.is_some_and(|c| c.is_ascii_digit() || c == '.')
+            || match after.next() {
+                Some(c) if c.is_ascii_digit() => true,
+                Some('.') => after.next().is_some_and(|c| c.is_ascii_digit()),
+                _ => false,
+            };
+        if !longer {
+            out.push_str(&line[last..i]);
+            out.push_str(new);
+            last = i + old.len();
+        }
+    }
+    out.push_str(&line[last..]);
+    out
 }
 
 /// Only manifests' dependency lines and lockfiles changed.
@@ -1029,6 +1084,81 @@ mod tests {
         assert_eq!(
             subject(&[file('M', "Cargo.toml"), file('M', "Cargo.lock")], &cargo).as_deref(),
             Some("release v0.3.0")
+        );
+    }
+
+    #[test]
+    fn a_release_may_swap_the_version_elsewhere() {
+        // gca's own 0.6.0: the README's install line and the install
+        // scripts' comments name the new version too
+        let mut diff = hunk(
+            "gca-rs/Cargo.toml",
+            1,
+            &[r#"version = "0.5.1""#],
+            &[r#"version = "0.6.0""#],
+        );
+        diff.push_str(&hunk(
+            "install.sh",
+            10,
+            &["#   GCA_VERSION=v0.5.1      install this release instead of the latest"],
+            &["#   GCA_VERSION=v0.6.0      install this release instead of the latest"],
+        ));
+        diff.push_str(&hunk(
+            "src/version.py",
+            1,
+            &[r#"__version__ = "0.5.1"  # not 10.5.1"#],
+            &[r#"__version__ = "0.6.0"  # not 10.5.1"#],
+        ));
+        diff.push_str(&hunk(
+            "README.md",
+            70,
+            &["`$env:GCA_UNINSTALL = 1` before the same command. `GCA_VERSION=v0.5.1`"],
+            &["`$env:GCA_UNINSTALL = 1` before the same command. `GCA_VERSION=v0.6.0`"],
+        ));
+        let mut files = vec![
+            file('M', "gca-rs/Cargo.toml"),
+            file('M', "gca-rs/Cargo.lock"),
+            file('M', "CHANGELOG.md"),
+            file('M', "README.md"),
+            file('M', "install.sh"),
+            file('M', "src/version.py"),
+        ];
+        let d = draft(&files, &diff).unwrap();
+        assert_eq!(d.subject, "release v0.6.0");
+        assert_eq!(d.kind, Some("chore"));
+
+        // anything else in such a file is no longer only a release: here a
+        // second hunk of the README
+        let other = "@@ -90,3 +90,3 @@ ctx\n-old words\n+new words\n";
+        assert_eq!(subject(&files, &format!("{diff}{other}")), None);
+        let bumped_elsewhere = hunk(
+            "docs/install.md",
+            3,
+            &["npm i other@0.5.1"],
+            &["npm i other@0.5.2"],
+        );
+        files.push(file('M', "docs/install.md"));
+        assert_eq!(subject(&files, &format!("{diff}{bumped_elsewhere}")), None);
+        // a new file is not a version swap
+        files.pop();
+        files.push(file('A', "docs/0.6.0.md"));
+        let added = hunk("docs/0.6.0.md", 0, &[], &["# 0.6.0"]);
+        assert_eq!(subject(&files, &format!("{diff}{added}")), None);
+    }
+
+    #[test]
+    fn versions_are_swapped_only_where_whole() {
+        assert_eq!(
+            swap_version("v0.5.1 and 0.5.1.", "0.5.1", "0.6.0"),
+            "v0.6.0 and 0.6.0."
+        );
+        assert_eq!(
+            swap_version("10.5.1, 0.5.12, 0.5.1.2", "0.5.1", "0.6.0"),
+            "10.5.1, 0.5.12, 0.5.1.2"
+        );
+        assert_eq!(
+            swap_version("pkg@0.5.1-beta", "0.5.1", "0.6.0"),
+            "pkg@0.6.0-beta"
         );
     }
 

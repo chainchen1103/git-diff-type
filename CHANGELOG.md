@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Release drafts for releases that name the version elsewhere too.** A
+  release that also changes the version in an install line of the README,
+  an install script or a version constant used to get no draft; now any
+  file whose only change is the old version giving way to the new one
+  counts as release bookkeeping, and gca drafts `release v1.2.0` and
+  pre-selects `chore` as for other releases. On the three test sets, 352
+  more commits by people get a release draft, 349 of which their authors
+  typed `chore`; gca's own releases 0.3.0 to 0.6.0 now get one too.
+
 ## 0.6.0 (2026-10-04)
 
 gca can use two small neural models besides its built-in one: one drafts

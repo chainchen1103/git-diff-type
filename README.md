@@ -231,7 +231,7 @@ gca drafts the subject only when the staged change follows a pattern:
 | Dependency versions in `package.json`, `Cargo.toml`, `pyproject.toml`, `requirements*.txt`, `go.mod` or a workflow's `uses:` lines | `bump zod from 3.22.0 to 3.23.8`, `downgrade …`, `bump vite and vitest`, `bump 12 dependencies` |
 | Dependencies added or removed | `add tempfile dependency`, `remove 3 dependencies` |
 | Only lockfiles | `update Cargo.lock`, `update lockfiles` |
-| The package's own version, with lockfiles and the changelog | `release v1.1.0`, and `chore` is pre-selected |
+| The package's own version, with lockfiles, the changelog and files where only that version changed (an install line, a version constant) | `release v1.1.0`, and `chore` is pre-selected |
 | Files moved or renamed without edits | `rename lib.rs to core.rs`, `move util.rs to src/core/`, `rename lib/a/ to lib/b/` |
 | Files deleted | `remove scripts/old.sh`, `remove 4 files from legacy/` |
 | Tests, a doc or a workflow file added or removed | `add tests for parser`, `add install docs`, `add release workflow` |
@@ -242,11 +242,11 @@ code change: people rarely keep a generic subject such as "update README".
 `--dry-run` prints the draft, and `--dry-run --json` has it as
 `subject_draft`.
 
-On the three test sets under [Accuracy](#accuracy), 5.2% of the commits people
-wrote get a draft (7,402 of 141,213): 3,359 dependency changes, 2,146 releases
+On the three test sets under [Accuracy](#accuracy), 5.5% of the commits people
+wrote get a draft (7,755 of 141,213): 3,359 dependency changes, 2,499 releases
 and 1,897 moved, removed or added files and typo fixes. For the releases,
-authors chose `chore` 96.6% of the time. A draft says what changed, while
-authors often wrote why: 6.8% of their subjects match the draft word for word,
+authors chose `chore` 96.9% of the time. A draft says what changed, while
+authors often wrote why: 6.5% of their subjects match the draft word for word,
 so a draft is only a default you can type over.
 
 ### Models (experimental)
